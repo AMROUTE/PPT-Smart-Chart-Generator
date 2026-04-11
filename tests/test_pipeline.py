@@ -2,8 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app import allowed_file, build_file_metadata, process_local_ppt
-from main_pipeline import PIPELINE_NODES, PipelineInput, export_pipeline_mermaid, run_pipeline
+from backend.app import create_app
+from backend.pipeline import PIPELINE_NODES, export_pipeline_mermaid, run_pipeline
+from backend.schemas import PipelineInput
+from backend.services import allowed_file, build_file_metadata, process_local_ppt
 
 
 class PipelineTests(unittest.TestCase):
@@ -32,7 +34,7 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["logs"]), 5)
 
 
-class AppHelpersTests(unittest.TestCase):
+class ServiceTests(unittest.TestCase):
     def test_allowed_file_only_accepts_pptx(self):
         self.assertTrue(allowed_file("demo.pptx"))
         self.assertFalse(allowed_file("demo.pdf"))
@@ -53,6 +55,15 @@ class AppHelpersTests(unittest.TestCase):
             self.assertIn("pipeline", payload)
         finally:
             tmp_path.unlink(missing_ok=True)
+
+
+class AppTests(unittest.TestCase):
+    def test_create_app_registers_expected_routes(self):
+        app = create_app()
+        route_paths = {route.path for route in app.routes}
+        self.assertIn("/api/health", route_paths)
+        self.assertIn("/api/pipeline", route_paths)
+        self.assertIn("/api/process", route_paths)
 
 
 if __name__ == "__main__":

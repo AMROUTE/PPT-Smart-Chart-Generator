@@ -13,8 +13,9 @@
 
 ```text
 .
-├── app.py                  # API 服务入口
-├── main_pipeline.py        # LangGraph / fallback Pipeline 骨架
+├── app.py                  # 兼容启动入口
+├── backend/                # 后端整合目录
+├── main_pipeline.py        # Pipeline 兼容导出入口
 ├── frontend/               # Vue 3 前端
 ├── tests/                  # 第一周测试框架
 ├── docs/week1-deliverables.md
