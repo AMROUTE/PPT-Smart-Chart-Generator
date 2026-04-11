@@ -7,8 +7,10 @@ seaborn
 pillow
 requests
 
-# ================== Web UI ==================
-gradio==4.44.0
+# ================== Backend API ==================
+fastapi
+uvicorn
+python-multipart
 
 # ================== AI 编排框架 ==================
 langchain==0.2.0
@@ -23,6 +25,6 @@ sentence-transformers
 python-dotenv
 pytest
 
-# ================== 兼容性修复（Python 3.12 专用）==================
+# ================== 兼容性修复（Python 3.12 专用） ==================
 huggingface_hub==0.34.3
 pydantic==2.9.2

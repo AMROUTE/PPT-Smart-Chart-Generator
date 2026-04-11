@@ -1,58 +1,126 @@
-import gradio as gr
+from __future__ import annotations
+
 import os
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Any, Dict, Optional
 
-# 环境变量保持不变
-os.environ["GRADIO_ANALYTICS_ENABLED"] = "false"
-os.environ["HF_HUB_OFFLINE"] = "1"
+from main_pipeline import PipelineInput, export_pipeline_mermaid, run_pipeline
 
-
-def process_ppt(pptx_file, slide_num):
-    # 这里的 pptx_file 在旧版本是 tempfile 路径，在新版本可能是个 dict
-    # 我们先做一层安全检查
-    if pptx_file is None:
-        return None, None, gr.update(value=None)
-
-        # 获取文件路径（兼容不同版本的 Gradio）
-    file_path = pptx_file.name if hasattr(pptx_file, 'name') else pptx_file
-    print(f"✅ 收到文件: {file_path} | 第 {slide_num} 页")
-
-    # 模拟处理过程
-    chart_url = "https://picsum.photos/800/600"
-    illus_url = "https://picsum.photos/800/600?random=2"
-
-    # 重点：对于 gr.File 输出，如果没有文件，建议返回 gr.update()
-    return chart_url, illus_url, gr.update(value=None)
+try:
+    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+except ModuleNotFoundError:  # pragma: no cover - local fallback for dependency-less environments
+    FastAPI = None
+    File = Form = UploadFile = HTTPException = JSONResponse = None
+    CORSMiddleware = None
 
 
-with gr.Blocks(title="语义驱动的 PPT 智能助手") as demo:
-    gr.Markdown("# 🎯 语义驱动的 PPT 智能图表生成与多模态配图系统")
+UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    with gr.Row():
-        # 作为输入时，设置 file_count="single" 确保传入的是单个文件对象
-        file = gr.File(label="📁 上传 PPT 文件", file_types=[".pptx"], type="filepath")
-        slide = gr.Number(label="处理第几页", value=1, minimum=1)
 
-    btn = gr.Button("🚀 一键生成图表 + 配图", variant="primary")
+def allowed_file(filename: str) -> bool:
+    return filename.lower().endswith(".pptx")
 
-    with gr.Row():
-        chart_out = gr.Image(label="📊 自动生成的图表")
-        illus_out = gr.Image(label="🎨 语义匹配配图")
 
-    download = gr.File(label="⬇️ 下载处理后的新 PPT")
+def build_file_metadata(file_path: Path, slide_number: int) -> Dict[str, Any]:
+    return {
+        "name": file_path.name,
+        "size_bytes": file_path.stat().st_size if file_path.exists() else 0,
+        "slide_number": slide_number,
+        "suffix": file_path.suffix.lower(),
+    }
 
-    btn.click(
-        process_ppt,
-        inputs=[file, slide],
-        outputs=[chart_out, illus_out, download]
+
+def process_local_ppt(file_path: str | Path, slide_number: int) -> Dict[str, Any]:
+    ppt_path = Path(file_path)
+    if not ppt_path.exists():
+        raise FileNotFoundError(f"PPT file not found: {ppt_path}")
+    if not allowed_file(ppt_path.name):
+        raise ValueError("Only .pptx files are supported.")
+
+    metadata = build_file_metadata(ppt_path, slide_number)
+    result = run_pipeline(
+        PipelineInput(
+            ppt_path=str(ppt_path),
+            current_slide=slide_number,
+        )
+    )
+    return {
+        "message": "Pipeline completed successfully.",
+        "file": metadata,
+        "pipeline": result,
+    }
+
+
+def create_app() -> Optional["FastAPI"]:
+    if FastAPI is None:
+        return None
+
+    app = FastAPI(
+        title="PPT Smart Chart Generator API",
+        version="1.0.0",
+        description="Week 1 backend skeleton for the Vue-based PPT smart chart generator.",
     )
 
-# ================== 启动配置优化 ==================
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/api/health")
+    def health_check() -> Dict[str, Any]:
+        return {
+            "status": "ok",
+            "frontend": "vue",
+            "pipeline_engine": "langgraph" if "graph" in export_pipeline_mermaid() else "fallback",
+        }
+
+    @app.get("/api/pipeline")
+    def get_pipeline_definition() -> Dict[str, str]:
+        return {"mermaid": export_pipeline_mermaid()}
+
+    @app.post("/api/process")
+    async def process_upload(
+        file: "UploadFile" = File(...),
+        slide_number: int = Form(1),
+    ) -> "JSONResponse":
+        if not allowed_file(file.filename):
+            raise HTTPException(status_code=400, detail="Please upload a .pptx file.")
+
+        suffix = Path(file.filename).suffix
+        with NamedTemporaryFile(delete=False, suffix=suffix, dir=UPLOAD_DIR) as temp_file:
+            contents = await file.read()
+            temp_file.write(contents)
+            temp_path = Path(temp_file.name)
+
+        try:
+            payload = process_local_ppt(temp_path, slide_number)
+            return JSONResponse(payload)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return app
+
+
+app = create_app()
+
+
 if __name__ == "__main__":
-    # 修改代码最后部分
-    demo.launch(
-        share=False,  # 先关掉 share，确保本地能跑通
-        server_name="0.0.0.0",  # 允许所有网络接口访问
-        server_port=7860,
-        show_error=True,
-        debug=True
-    )
+    if app is None:
+        missing = ["fastapi", "uvicorn"]
+        raise SystemExit(
+            "FastAPI runtime dependencies are missing. "
+            f"Install them first: pip install {' '.join(missing)}"
+        )
+
+    import uvicorn
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
