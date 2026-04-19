@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from backend.chart_generator import generate_chart
+from backend.ppt_parser import extract_slide_content
 from backend.schemas import AgentState, PipelineInput
 
 try:
@@ -29,15 +31,30 @@ def append_log(state: dict[str, Any], message: str) -> dict[str, Any]:
 
 def parse_ppt_node(state: dict[str, Any]) -> dict[str, Any]:
     ppt_path = Path(state["ppt_path"])
-    state["text_content"] = f"Parsed slide {state['current_slide']} from {ppt_path.name}"
-    state["extracted_tables"] = [
-        {
-            "title": "sample_table",
-            "columns": ["category", "value"],
-            "rows": [["Q1", 120], ["Q2", 180]],
-        }
-    ]
-    return append_log(state, "PPT parsing completed.")
+    try:
+        parsed = extract_slide_content(ppt_path, state["current_slide"])
+        state["text_content"] = parsed.text_content or f"Parsed slide {state['current_slide']} from {ppt_path.name}"
+        state["extracted_tables"] = [
+            {
+                "title": table["title"],
+                "columns": table["columns"],
+                "rows": table["rows"],
+            }
+            for table in parsed.tables
+        ]
+        state["shapes"] = parsed.shapes
+        return append_log(state, "PPT parsing completed from source file.")
+    except Exception:
+        state["text_content"] = f"Parsed slide {state['current_slide']} from {ppt_path.name}"
+        state["extracted_tables"] = [
+            {
+                "title": "sample_table",
+                "columns": ["category", "value"],
+                "rows": [["Q1", 120], ["Q2", 180]],
+            }
+        ]
+        state["shapes"] = []
+        return append_log(state, "PPT parsing fallback completed.")
 
 
 def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -50,14 +67,38 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def generate_chart_node(state: dict[str, Any]) -> dict[str, Any]:
-    rows = state.get("extracted_tables", [{}])[0].get("rows", [])
-    state["chart_spec"] = {
-        "type": state["intent"].get("chart_type", "bar"),
-        "title": f"Slide {state['current_slide']} chart recommendation",
-        "data_points": len(rows),
-    }
-    state["chart_image"] = f"outputs/chart_slide_{state['current_slide']}.png"
-    return append_log(state, "Chart generation placeholder completed.")
+    chart_type = state["intent"].get("chart_type", "bar")
+    output_path = Path("outputs") / f"chart_slide_{state['current_slide']}.png"
+    tables = state.get("extracted_tables", [])
+
+    try:
+        if not tables:
+            raise ValueError("No extracted tables available for chart generation.")
+
+        table = tables[0]
+        columns = table.get("columns", [])
+        rows = table.get("rows", [])
+        if not columns or not rows:
+            raise ValueError("Extracted table is empty.")
+
+        records = [dict(zip(columns, row)) for row in rows]
+        chart = generate_chart(
+            records,
+            chart_type=chart_type,
+            output_path=output_path,
+            title=f"Slide {state['current_slide']} {chart_type.title()} Chart",
+        )
+        state["chart_spec"] = chart.to_dict()
+        state["chart_image"] = chart.output_path
+        return append_log(state, "Chart generation completed from extracted table.")
+    except Exception:
+        state["chart_spec"] = {
+            "type": chart_type,
+            "title": f"Slide {state['current_slide']} chart recommendation",
+            "data_points": len(tables[0].get("rows", [])) if tables else 0,
+        }
+        state["chart_image"] = str(output_path)
+        return append_log(state, "Chart generation fallback completed.")
 
 
 def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:

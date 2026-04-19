@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -16,6 +16,7 @@ class AgentState:
     current_slide: int
     text_content: str = ""
     extracted_tables: list[dict[str, Any]] = field(default_factory=list)
+    shapes: list[dict[str, Any]] = field(default_factory=list)
     intent: dict[str, Any] = field(default_factory=dict)
     chart_spec: dict[str, Any] = field(default_factory=dict)
     chart_image: str = ""
