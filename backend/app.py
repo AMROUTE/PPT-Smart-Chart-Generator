@@ -3,13 +3,16 @@ from __future__ import annotations
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_settings
-from backend.pipeline import export_pipeline_mermaid
 from backend.services import (
     allowed_file,
     build_health_payload,
+    ensure_output_dir,
+    ensure_upload_dir,
     process_local_ppt,
+    process_demo_text,
     save_upload,
 )
 
@@ -29,6 +32,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.mount("/assets/outputs", StaticFiles(directory=ensure_output_dir()), name="outputs")
+    app.mount("/assets/uploads", StaticFiles(directory=ensure_upload_dir()), name="uploads")
 
     @app.get("/api/health")
     def health_check() -> dict[str, str]:
@@ -36,6 +41,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/pipeline")
     def get_pipeline_definition() -> dict[str, str]:
+        from backend.pipeline import export_pipeline_mermaid
+
         return {"mermaid": export_pipeline_mermaid()}
 
     @app.post("/api/process")
@@ -52,6 +59,13 @@ def create_app() -> FastAPI:
             return JSONResponse(payload)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/demo-chart")
+    async def demo_chart(source_text: str = Form(...)) -> JSONResponse:
+        if not source_text.strip():
+            raise HTTPException(status_code=400, detail="Please provide demo text.")
+        payload = process_demo_text(source_text)
+        return JSONResponse(payload)
 
     return app
 
