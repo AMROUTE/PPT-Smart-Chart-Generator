@@ -96,23 +96,95 @@ def parse_ppt_node(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
-    chart_type = "bar"
+    semantic_mode = str(state.get("semantic_mode", "local")).strip().lower() or "local"
     text_content = (state.get("text_content") or "").lower()
-    numeric_rows = sum(len(table.get("rows", [])) for table in state.get("extracted_tables", []))
-    if "trend" in text_content or "增长" in text_content or "趋势" in text_content:
-        chart_type = "line"
-    elif "比例" in text_content or "占比" in text_content:
-        chart_type = "pie"
-    elif numeric_rows >= 5:
-        chart_type = "bar"
+    table = (state.get("extracted_tables") or [{}])[0]
+    columns = table.get("columns", [])
+    rows = table.get("rows", [])
 
-    state["intent"] = {
+    table_summary = f"columns={columns}; sample_rows={rows[:4]}"
+
+    def looks_like_time_label(value: Any) -> bool:
+        text = str(value)
+        markers = ["q1", "q2", "q3", "q4", "202", "月", "季度", "week", "wk", "jan", "feb", "mar"]
+        return any(marker in text.lower() for marker in markers)
+
+    numeric_column_indexes: list[int] = []
+    for index, column in enumerate(columns):
+        values = [row[index] for row in rows if len(row) > index]
+        numeric_count = 0
+        for value in values:
+            try:
+                float(value)
+                numeric_count += 1
+            except (TypeError, ValueError):
+                continue
+        if values and numeric_count >= max(1, len(values) // 2):
+            numeric_column_indexes.append(index)
+
+    first_column_values = [row[0] for row in rows if row]
+    numeric_rows = len(rows)
+    chart_type = "bar"
+
+    if any(keyword in text_content for keyword in ["比例", "占比", "份额", "构成", "share", "portion"]):
+        chart_type = "pie"
+    elif any(keyword in text_content for keyword in ["趋势", "增长", "变化", "走势", "trend", "growth"]):
+        chart_type = "line"
+    elif first_column_values and all(looks_like_time_label(value) for value in first_column_values[: min(4, len(first_column_values))]):
+        chart_type = "line"
+    elif len(numeric_column_indexes) >= 2 and len(columns) <= 3:
+        chart_type = "scatter"
+    elif len(numeric_column_indexes) >= 3 and numeric_rows >= 4:
+        chart_type = "heatmap"
+    elif numeric_rows <= 6 and len(numeric_column_indexes) == 1:
+        chart_type = "bar"
+    elif numeric_rows > 8 and len(numeric_column_indexes) == 1:
+        chart_type = "line"
+
+    heuristic_result = {
         "task": "chart_generation",
         "chart_type": chart_type,
         "audience": "business",
-        "summary": "Inferred from slide text and extracted table structure.",
+        "summary": "Inferred from slide text, label pattern, and extracted table structure.",
+        "reason": "基于文本关键词、标签模式和表格结构进行规则判断。",
+        "visual_theme": "科技数据分析插画",
+        "palette": ["深蓝", "天蓝"],
+        "keywords": ["数据", "分析", "业务"],
+        "source": "heuristic",
     }
-    return append_log(state, "Semantic analysis completed.")
+    if semantic_mode == "qwen":
+        try:
+            from backend.qwen_client import analyze_semantics_with_qwen
+
+            llm_result = analyze_semantics_with_qwen(state.get("text_content", ""), table_summary)
+            state["intent"] = {
+                "task": "chart_generation",
+                "chart_type": llm_result["chart_type"],
+                "audience": llm_result["audience"],
+                "summary": llm_result["title"],
+                "reason": llm_result["reason"],
+                "visual_theme": llm_result["visual_theme"],
+                "palette": llm_result["palette"],
+                "keywords": llm_result["keywords"],
+                "source": "qwen",
+                "model": get_settings().qwen_model,
+                "semantic_mode": "qwen",
+            }
+            return append_log(state, "Semantic analysis completed with Qwen.")
+        except Exception as exc:
+            state["intent"] = {
+                **heuristic_result,
+                "reason": f"千问调用失败，已回退本地规则：{exc}",
+                "semantic_mode": "local",
+            }
+            append_log(state, f"Qwen semantic analysis unavailable, fallback to heuristic: {exc}", "warning")
+            return append_log(state, "Semantic analysis completed with heuristic fallback.")
+
+    state["intent"] = {
+        **heuristic_result,
+        "semantic_mode": "local",
+    }
+    return append_log(state, "Semantic analysis completed with local heuristic.")
 
 
 def generate_chart_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -197,20 +269,62 @@ def _write_chart_fallback_svg(output_path: Path, slide_number: int, tables: list
 def _write_illustration_svg(output_path: Path, prompt: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     safe_prompt = prompt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    prompt_lower = prompt.lower()
+
+    if any(keyword in prompt_lower for keyword in ["finance", "business", "revenue", "profit", "增长", "营收", "商业"]):
+        accent = "#f59e0b"
+        accent_two = "#38bdf8"
+        motif = (
+            "<rect x='160' y='250' width='120' height='220' rx='24' fill='#f59e0b' opacity='0.88' />"
+            "<rect x='330' y='190' width='120' height='280' rx='24' fill='#38bdf8' opacity='0.88' />"
+            "<rect x='500' y='130' width='120' height='340' rx='24' fill='#22c55e' opacity='0.88' />"
+            "<path d='M180 520 C340 420, 460 420, 620 240' stroke='#ffffff' stroke-width='10' fill='none' stroke-linecap='round' />"
+        )
+    elif any(keyword in prompt_lower for keyword in ["medical", "health", "医疗", "医院", "患者"]):
+        accent = "#fb7185"
+        accent_two = "#60a5fa"
+        motif = (
+            "<circle cx='300' cy='280' r='92' fill='#fb7185' opacity='0.9' />"
+            "<rect x='270' y='210' width='60' height='140' rx='14' fill='#ffffff' />"
+            "<rect x='230' y='250' width='140' height='60' rx='14' fill='#ffffff' />"
+            "<rect x='520' y='200' width='220' height='160' rx='28' fill='#60a5fa' opacity='0.88' />"
+            "<path d='M550 280 H710' stroke='#ffffff' stroke-width='12' stroke-linecap='round' />"
+            "<path d='M630 210 V350' stroke='#ffffff' stroke-width='12' stroke-linecap='round' />"
+        )
+    elif any(keyword in prompt_lower for keyword in ["education", "school", "教学", "教育", "学生"]):
+        accent = "#8b5cf6"
+        accent_two = "#f97316"
+        motif = (
+            "<path d='M200 250 L420 160 L640 250 L420 340 Z' fill='#8b5cf6' opacity='0.9' />"
+            "<rect x='340' y='340' width='160' height='130' rx='20' fill='#f97316' opacity='0.88' />"
+            "<path d='M640 250 V390' stroke='#ffffff' stroke-width='10' stroke-linecap='round' />"
+            "<circle cx='640' cy='410' r='26' fill='#ffffff' opacity='0.95' />"
+        )
+    else:
+        accent = "#2dd4bf"
+        accent_two = "#60a5fa"
+        motif = (
+            "<circle cx='260' cy='250' r='110' fill='#2dd4bf' opacity='0.22' />"
+            "<rect x='180' y='190' width='220' height='160' rx='32' fill='#2dd4bf' opacity='0.82' />"
+            "<rect x='470' y='150' width='260' height='220' rx='36' fill='#60a5fa' opacity='0.82' />"
+            "<circle cx='810' cy='220' r='70' fill='#f8fafc' opacity='0.25' />"
+        )
+
     output_path.write_text(
         (
             '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">'
             "<defs><linearGradient id='bg' x1='0' x2='1' y1='0' y2='1'>"
             "<stop offset='0%' stop-color='#0f2742' />"
-            "<stop offset='100%' stop-color='#2f7fb9' />"
+            f"<stop offset='100%' stop-color='{accent_two}' />"
             "</linearGradient></defs>"
             "<rect width='1200' height='700' fill='url(#bg)' rx='28' />"
-            "<circle cx='240' cy='180' r='110' fill='rgba(255,255,255,0.10)' />"
             "<circle cx='980' cy='160' r='84' fill='rgba(255,255,255,0.08)' />"
-            "<rect x='120' y='420' width='960' height='120' rx='24' fill='rgba(255,255,255,0.12)' />"
-            "<text x='120' y='160' fill='#f7fbff' font-size='48'>Semantic Illustration Preview</text>"
-            "<text x='120' y='235' fill='#d8ebff' font-size='28'>Week 2 local demo asset</text>"
-            f"<text x='120' y='475' fill='#ffffff' font-size='24'>{safe_prompt[:90]}</text>"
+            f"<circle cx='240' cy='180' r='110' fill='{accent}' opacity='0.14' />"
+            f"{motif}"
+            "<rect x='120' y='470' width='960' height='120' rx='28' fill='rgba(255,255,255,0.14)' />"
+            "<text x='120' y='142' fill='#f7fbff' font-size='48'>Semantic Illustration Preview</text>"
+            "<text x='120' y='205' fill='#d8ebff' font-size='28'>Topic-aware local design mock</text>"
+            f"<text x='120' y='525' fill='#ffffff' font-size='24'>{safe_prompt[:90]}</text>"
             "</svg>"
         ),
         encoding="utf-8",
@@ -218,8 +332,11 @@ def _write_illustration_svg(output_path: Path, prompt: str) -> None:
 
 
 def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
+    topic_hint = (state.get("text_content") or "business presentation").splitlines()[0][:80]
+    palette_hint = ", ".join(state["intent"].get("palette", [])[:2])
+    keyword_hint = ", ".join(state["intent"].get("keywords", [])[:3])
     state["illustration_prompt"] = (
-        f"Create a clean technology-themed illustration aligned with slide {state['current_slide']} and the inferred business topic."
+        f"{state['intent'].get('visual_theme', '科技数据分析插画')}，关键词：{keyword_hint}，主色：{palette_hint}，主题：{topic_hint}"
     )
     output_path = (
         Path(get_settings().output_dir)
@@ -343,6 +460,7 @@ def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
             ppt_path=payload.ppt_path,
             request_id=payload.request_id,
             current_slide=payload.current_slide,
+            semantic_mode=payload.semantic_mode,
         ).to_dict()
     else:
         initial_state = dict(payload)
@@ -351,6 +469,7 @@ def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
         initial_state.setdefault("retry_counts", {})
         initial_state.setdefault("progress", 0)
         initial_state.setdefault("status", "pending")
+        initial_state.setdefault("semantic_mode", "local")
 
     state = dict(initial_state)
     state["status"] = "running"

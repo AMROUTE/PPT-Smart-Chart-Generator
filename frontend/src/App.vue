@@ -11,6 +11,7 @@ const demoText = ref("营收: 120\n成本: 80\n利润: 40");
 const demoLoading = ref(false);
 const progressValue = ref(0);
 const stageCards = ref([]);
+const semanticMode = ref("local");
 
 const progressTemplate = [
   { stage: "parse_ppt", label: "解析内容" },
@@ -49,6 +50,7 @@ async function submitForm() {
   const formData = new FormData();
   formData.append("file", file.value);
   formData.append("slide_number", String(slideNumber.value));
+  formData.append("semantic_mode", semanticMode.value);
 
   try {
     const res = await fetch("/api/process", {
@@ -77,6 +79,7 @@ async function runDemo() {
 
   const formData = new FormData();
   formData.append("source_text", demoText.value);
+  formData.append("semantic_mode", semanticMode.value);
 
   try {
     const res = await fetch("/api/demo-chart", {
@@ -149,6 +152,12 @@ const chartPreviewUrl = computed(() => pipelineResult.value?.chart_image_url ?? 
 const illustrationPreviewUrl = computed(() => pipelineResult.value?.illustration_image_url ?? "");
 const downloadUrl = computed(() => pipelineResult.value?.final_pptx_url ?? "");
 const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
+const intentInfo = computed(() => pipelineResult.value?.intent ?? null);
+const semanticModeLabel = computed(() => (semanticMode.value === "qwen" ? "千问 API" : "本地规则"));
+const semanticModeText = computed(() => {
+  const mode = intentInfo.value?.semantic_mode || semanticMode.value;
+  return mode === "qwen" ? "千问 API" : "本地规则";
+});
 </script>
 
 <template>
@@ -168,6 +177,14 @@ const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
           <button :class="{ active: activeMode === 'ppt' }" @click="activeMode = 'ppt'">PPT 模式</button>
           <button :class="{ active: activeMode === 'demo' }" @click="activeMode = 'demo'">文本演示</button>
         </div>
+
+        <label class="field">
+          <span>语义分析模式</span>
+          <select v-model="semanticMode">
+            <option value="local">本地规则</option>
+            <option value="qwen">千问 API</option>
+          </select>
+        </label>
 
         <template v-if="activeMode === 'ppt'">
         <label class="field">
@@ -198,7 +215,7 @@ const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
 
         <div class="progress-card">
           <div class="progress-meta">
-            <span>处理进度</span>
+            <span>处理进度 · {{ semanticModeLabel }}</span>
             <strong>{{ progressValue }}%</strong>
           </div>
           <div class="progress-track">
@@ -239,6 +256,13 @@ const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
     <section class="result-grid secondary-grid">
       <div class="panel result-panel">
         <h2>Pipeline 日志与状态</h2>
+        <div v-if="intentInfo" class="intent-card">
+          <p><strong>推荐图表：</strong>{{ intentInfo.chart_type }}</p>
+          <p><strong>语义来源：</strong>{{ intentInfo.source || "heuristic" }}</p>
+          <p><strong>所选模式：</strong>{{ semanticModeText }}</p>
+          <p><strong>判断依据：</strong>{{ intentInfo.reason || intentInfo.summary }}</p>
+          <p><strong>配图主题：</strong>{{ intentInfo.visual_theme || "未提供" }}</p>
+        </div>
         <div class="stage-list">
           <div v-for="item in stageCards" :key="item.stage + item.status" class="stage-item">
             <span>{{ item.label }}</span>

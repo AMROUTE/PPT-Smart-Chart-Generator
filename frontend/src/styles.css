@@ -18,6 +18,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -101,6 +102,7 @@ textarea {
 }
 
 .field textarea,
+.field select,
 .field input {
   width: 100%;
   border: 1px solid rgba(16, 32, 51, 0.12);
@@ -221,6 +223,19 @@ textarea {
   display: grid;
   gap: 10px;
   margin-bottom: 16px;
+}
+
+.intent-card {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(19, 32, 52, 0.05);
+}
+
+.intent-card p {
+  margin: 0 0 8px;
+  color: #42566d;
+  line-height: 1.6;
 }
 
 .stage-item {

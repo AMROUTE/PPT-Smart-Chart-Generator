@@ -1,0 +1,15 @@
+.git
+.venv
+.venv312
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.idea
+frontend/node_modules
+frontend/dist
+outputs
+logs
+data/uploads

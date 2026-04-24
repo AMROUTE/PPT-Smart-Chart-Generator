@@ -52,3 +52,60 @@ python -m unittest discover -s tests
 ```
 
 安装 `pytest` 后，也可以继续沿用 `pytest` 工作流。
+
+## Docker 部署
+
+项目已经提供了前后端分离的 Docker 包装：
+
+- `Dockerfile.backend`
+- `frontend/Dockerfile`
+- `frontend/nginx.conf`
+- `docker-compose.yml`
+
+### 1. 准备环境变量
+
+确保根目录 `.env` 至少包含：
+
+```env
+QWEN_API_KEY=your-qwen-api-key
+ENABLE_QWEN_API=1
+QWEN_MODEL=qwen-plus
+```
+
+如果你暂时不想启用千问，可以设置：
+
+```env
+ENABLE_QWEN_API=0
+```
+
+### 2. 构建并启动
+
+```bash
+docker compose up -d --build
+```
+
+启动后：
+
+- 前端地址：`http://服务器IP:8080`
+- 后端地址：`http://服务器IP:8000`
+
+### 3. 查看日志
+
+```bash
+docker compose logs -f backend
+docker compose logs -f frontend
+```
+
+### 4. 停止服务
+
+```bash
+docker compose down
+```
+
+### 5. 持久化目录
+
+以下目录会挂载到宿主机，方便保留结果文件：
+
+- `./outputs`
+- `./logs`
+- `./data/uploads`

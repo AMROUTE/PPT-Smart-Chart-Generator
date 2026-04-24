@@ -1,0 +1,11 @@
+python-pptx==1.0.2
+pandas
+matplotlib
+seaborn
+pillow
+requests
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+langgraph==0.2.0

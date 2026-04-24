@@ -1,6 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+import os
+
+os.environ["ENABLE_QWEN_API"] = "0"
 
 from backend.app import create_app
 from backend.pipeline import PIPELINE_NODES, export_pipeline_mermaid, run_pipeline
@@ -35,7 +38,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_run_pipeline_returns_expected_placeholders(self):
         result = run_pipeline(PipelineInput(ppt_path="demo.pptx", current_slide=2, request_id="test-run"))
-        self.assertIn(result["intent"]["chart_type"], {"bar", "line", "pie"})
+        self.assertIn(result["intent"]["chart_type"], {"bar", "line", "pie", "scatter", "heatmap"})
         self.assertIn("chart_slide_2", result["chart_image"])
         self.assertTrue(result["final_pptx_path"].endswith("demo_enhanced.pptx"))
         self.assertGreaterEqual(len(result["logs"]), 6)

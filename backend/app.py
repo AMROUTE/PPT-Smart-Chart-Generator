@@ -49,22 +49,26 @@ def create_app() -> FastAPI:
     async def process_upload(
         file: UploadFile = File(...),
         slide_number: int = Form(1),
+        semantic_mode: str = Form("local"),
     ) -> JSONResponse:
         if not file.filename or not allowed_file(file.filename):
             raise HTTPException(status_code=400, detail="Please upload a .pptx file.")
 
         temp_path = save_upload(file.filename, await file.read())
         try:
-            payload = process_local_ppt(temp_path, slide_number)
+            payload = process_local_ppt(temp_path, slide_number, semantic_mode=semantic_mode)
             return JSONResponse(payload)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/demo-chart")
-    async def demo_chart(source_text: str = Form(...)) -> JSONResponse:
+    async def demo_chart(
+        source_text: str = Form(...),
+        semantic_mode: str = Form("local"),
+    ) -> JSONResponse:
         if not source_text.strip():
             raise HTTPException(status_code=400, detail="Please provide demo text.")
-        payload = process_demo_text(source_text)
+        payload = process_demo_text(source_text, semantic_mode=semantic_mode)
         return JSONResponse(payload)
 
     return app

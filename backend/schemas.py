@@ -9,6 +9,7 @@ class PipelineInput:
     ppt_path: str
     current_slide: int = 1
     request_id: str = ""
+    semantic_mode: str = "local"
 
 
 @dataclass
@@ -16,6 +17,7 @@ class AgentState:
     ppt_path: str
     current_slide: int
     request_id: str = ""
+    semantic_mode: str = "local"
     text_content: str = ""
     extracted_tables: list[dict[str, Any]] = field(default_factory=list)
     shapes: list[dict[str, Any]] = field(default_factory=list)
