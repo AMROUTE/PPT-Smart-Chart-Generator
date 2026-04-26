@@ -6,6 +6,8 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from rag_retriever import retrieve_similar_cases, format_cases_for_prompt
+
 load_dotenv()
 
 API_KEY = os.getenv("OPENAI_API_KEY")
@@ -21,38 +23,46 @@ client = OpenAI(
 )
 
 PROMPT_TEMPLATE = """
-你是一个“PPT 智能图表生成系统”的语义识别模块。
-你的任务是：根据输入文本，识别其最适合的可视化意图，并输出统一 JSON。
+你是“语义驱动的PPT智能图表生成系统”的语义识别模块。
+你的任务是根据输入文本，完成：
+1. 意图分类
+2. 数据提取
+3. 图表推荐
 
-【可选意图，只能选一个】
+你必须从以下五类意图中选择唯一一个：
+
+【意图类别】
 1. comparison：比较
-   - 适用于不同对象/类别之间高低、多少、优劣对比
-   - 常用图表：bar_chart
+适用场景：不同对象、产品、区域、方案之间的高低、多少、强弱对比。
+常见关键词：高于、低于、相比、对比、最高、最低、分别为。
+推荐图表：bar_chart。
 
 2. trend：趋势
-   - 适用于时间序列、阶段变化、逐年增长/下降
-   - 常用图表：line_chart
+适用场景：数据随时间、阶段、年份、月份、季度变化。
+常见关键词：增长、下降、上升、减少、逐年、近几年、从...到...。
+推荐图表：line_chart。
 
 3. composition：构成
-   - 适用于部分占整体比例、份额、占比
-   - 常用图表：pie_chart
+适用场景：部分与整体之间的比例关系、占比、份额、组成结构。
+常见关键词：占、占比、比例、构成、组成、份额。
+推荐图表：pie_chart。
 
 4. distribution：分布
-   - 适用于数据集中在哪些区间/类别、频数分布
-   - 常用图表：bar_chart
+适用场景：数据集中在某些区间、类别或频次范围。
+常见关键词：集中、分布、区间、大多数、主要位于。
+推荐图表：bar_chart。
 
 5. correlation：相关性
-   - 适用于两个变量之间正相关、负相关、关系强弱
-   - 常用图表：scatter_chart
+适用场景：两个变量之间存在正相关、负相关、影响关系。
+常见关键词：相关、关系、影响、越...越...、随着...而...。
+推荐图表：scatter_chart。
 
-【图表类型限制，只能从以下中选择】
-- bar_chart
-- line_chart
-- pie_chart
-- scatter_chart
+【相似案例参考】
+{rag_examples}
 
 【输出要求】
-1. 必须严格输出 JSON，对象格式如下：
+只能输出合法 JSON，不要输出 Markdown，不要输出解释性文字。
+JSON 格式必须如下：
 {{
   "intent": "",
   "chart_type": "",
@@ -62,17 +72,16 @@ PROMPT_TEMPLATE = """
   "reason": ""
 }}
 
-2. 不要输出 Markdown，不要输出 ```json，不要输出额外解释。
-3. 如果文本中没有完整数值，也可以根据文本补出合理的 x/y：
-   - comparison：x 放类别名，y 可放相对值
-   - trend：x 放时间/阶段，y 可放数值
-   - composition：x 放组成部分，y 放占比或相对值
-   - distribution：x 放区间/类别，y 放频数或相对值
-   - correlation：x、y 都放数值列表
-4. title 请生成简洁中文标题。
-5. reason 用一句中文简要说明判断依据。
+【字段要求】
+- intent 必须是 comparison、trend、composition、distribution、correlation 之一。
+- chart_type 必须是 bar_chart、line_chart、pie_chart、scatter_chart 之一。
+- title 使用简洁中文标题。
+- x 和 y 必须是列表。
+- 如果原文有明确数字，请优先提取原文数字。
+- 如果原文没有明确数字，请根据语义生成可演示的合理相对值。
+- reason 用一句中文说明判断依据。
 
-【输入文本】
+【待分析文本】
 {text}
 """
 
@@ -137,7 +146,14 @@ def _normalize_result(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def semantic_parse(text: str) -> Dict[str, Any]:
     """调用大模型进行语义识别并返回结构化结果。"""
-    prompt = PROMPT_TEMPLATE.format(text=text)
+
+    similar_cases = retrieve_similar_cases(text, top_k=5)
+    rag_examples = format_cases_for_prompt(similar_cases)
+
+    prompt = PROMPT_TEMPLATE.format(
+        text=text,
+        rag_examples=rag_examples
+    )
 
     response = client.chat.completions.create(
         model=MODEL_NAME,

@@ -1,91 +1,61 @@
 test_cases = [
-    # comparison
-    {
-        "text": "A产品销量比B产品高20%，其中A产品为120，B产品为100。",
-        "label": "comparison"
-    },
-    {
-        "text": "今年华东区销售额高于华南区和华北区，分别为300万、220万和180万。",
-        "label": "comparison"
-    },
-    {
-        "text": "三家门店中，1号店客流量最高，2号店次之，3号店最低。",
-        "label": "comparison"
-    },
-    {
-        "text": "不同专业就业率对比显示，计算机最高，金融次之，管理最低。",
-        "label": "comparison"
-    },
+    # comparison 比较类
+    {"text": "A产品销量比B产品高20%，其中A产品为120，B产品为100。", "label": "comparison"},
+    {"text": "华东区销售额高于华南区和华北区，分别为300万、220万和180万。", "label": "comparison"},
+    {"text": "三家门店中，1号店客流量最高，2号店次之，3号店最低。", "label": "comparison"},
+    {"text": "不同专业就业率对比显示，计算机最高，金融次之，管理最低。", "label": "comparison"},
+    {"text": "苹果、香蕉和橙子的销量分别为80、60和40。", "label": "comparison"},
+    {"text": "男生和女生平均成绩分别为85分和90分。", "label": "comparison"},
+    {"text": "三个方案成本分别为10万、15万和8万，其中方案三最低。", "label": "comparison"},
+    {"text": "北京、上海、广州三地房租水平差异明显。", "label": "comparison"},
+    {"text": "A公司利润高于B公司和C公司。", "label": "comparison"},
+    {"text": "不同品牌手机的市场销量存在明显差异。", "label": "comparison"},
 
-    # trend
-    {
-        "text": "2020年到2023年销售额分别为100万、150万、220万、300万，整体持续增长。",
-        "label": "trend"
-    },
-    {
-        "text": "公司利润近五年呈逐年下降趋势。",
-        "label": "trend"
-    },
-    {
-        "text": "项目进度在第一阶段较慢，后两阶段明显加快。",
-        "label": "trend"
-    },
-    {
-        "text": "用户注册量从1月到6月不断上升。",
-        "label": "trend"
-    },
+    # trend 趋势类
+    {"text": "2020年到2023年销售额分别为100万、150万、220万、300万，整体持续增长。", "label": "trend"},
+    {"text": "公司利润近五年呈逐年下降趋势。", "label": "trend"},
+    {"text": "用户注册量从1月到6月不断上升。", "label": "trend"},
+    {"text": "项目进度在第一阶段较慢，后两阶段明显加快。", "label": "trend"},
+    {"text": "过去四个季度收入持续增长。", "label": "trend"},
+    {"text": "网站访问量在春节后明显回升。", "label": "trend"},
+    {"text": "近三个月客户投诉数量逐步减少。", "label": "trend"},
+    {"text": "从2019年到2024年，新能源汽车销量快速增长。", "label": "trend"},
+    {"text": "系统响应时间在优化后逐周降低。", "label": "trend"},
+    {"text": "学习时长从第一周到第四周持续增加。", "label": "trend"},
 
-    # composition
-    {
-        "text": "公司收入构成中，软件业务占45%，硬件业务占35%，服务业务占20%。",
-        "label": "composition"
-    },
-    {
-        "text": "市场份额方面，A品牌占50%，B品牌占30%，C品牌占20%。",
-        "label": "composition"
-    },
-    {
-        "text": "本月预算主要由人力成本、设备采购和运营支出组成。",
-        "label": "composition"
-    },
-    {
-        "text": "用户群体中，学生占40%，职场人士占35%，其他占25%。",
-        "label": "composition"
-    },
+    # composition 构成类
+    {"text": "公司收入构成中，软件业务占45%，硬件业务占35%，服务业务占20%。", "label": "composition"},
+    {"text": "市场份额方面，A品牌占50%，B品牌占30%，C品牌占20%。", "label": "composition"},
+    {"text": "用户群体中，学生占40%，职场人士占35%，其他占25%。", "label": "composition"},
+    {"text": "本月预算由人力成本、设备采购和运营支出三部分组成。", "label": "composition"},
+    {"text": "产品成本中，原材料占60%，人工占25%，运输占15%。", "label": "composition"},
+    {"text": "销售渠道中，线上占70%，线下占30%。", "label": "composition"},
+    {"text": "班级学生来源包括本地生、外地生和国际生。", "label": "composition"},
+    {"text": "项目风险主要由技术风险、进度风险和成本风险组成。", "label": "composition"},
+    {"text": "客户类型中企业客户占65%，个人客户占35%。", "label": "composition"},
+    {"text": "总支出中研发费用占比最高，其次是市场费用和管理费用。", "label": "composition"},
 
-    # distribution
-    {
-        "text": "学生成绩主要集中在80到90分之间，少数分布在60到70分和90分以上。",
-        "label": "distribution"
-    },
-    {
-        "text": "订单量主要集中在100到200单区间。",
-        "label": "distribution"
-    },
-    {
-        "text": "问卷结果显示，大多数用户选择了中等满意度。",
-        "label": "distribution"
-    },
-    {
-        "text": "访问时长分布在5分钟以内的用户最多。",
-        "label": "distribution"
-    },
+    # distribution 分布类
+    {"text": "学生成绩主要集中在80到90分之间，少数分布在60到70分和90分以上。", "label": "distribution"},
+    {"text": "订单量主要集中在100到200单区间。", "label": "distribution"},
+    {"text": "问卷结果显示，大多数用户选择了中等满意度。", "label": "distribution"},
+    {"text": "访问时长分布在5分钟以内的用户最多。", "label": "distribution"},
+    {"text": "年龄分布显示，用户主要集中在20到30岁。", "label": "distribution"},
+    {"text": "考试分数在70到80分的人数最多。", "label": "distribution"},
+    {"text": "客户消费金额主要分布在100元到300元之间。", "label": "distribution"},
+    {"text": "员工工作年限集中在1到3年。", "label": "distribution"},
+    {"text": "故障发生频率在不同设备类型中分布不均。", "label": "distribution"},
+    {"text": "每天访问次数的分布显示，大多数用户访问1到3次。", "label": "distribution"},
 
-    # correlation
-    {
-        "text": "广告投入越高，销售额通常越高，二者呈明显正相关。",
-        "label": "correlation"
-    },
-    {
-        "text": "学习时间和考试成绩之间存在较强正相关关系。",
-        "label": "correlation"
-    },
-    {
-        "text": "温度升高时，热饮销量下降，二者呈负相关。",
-        "label": "correlation"
-    },
-    {
-        "text": "训练次数与模型精度之间存在一定相关性。",
-        "label": "correlation"
-    }
+    # correlation 相关性类
+    {"text": "广告投入越高，销售额通常越高，二者呈明显正相关。", "label": "correlation"},
+    {"text": "学习时间和考试成绩之间存在较强正相关关系。", "label": "correlation"},
+    {"text": "温度升高时，热饮销量下降，二者呈负相关。", "label": "correlation"},
+    {"text": "训练次数与模型精度之间存在一定相关性。", "label": "correlation"},
+    {"text": "价格越高，购买人数越少。", "label": "correlation"},
+    {"text": "页面加载时间越长，用户留存率越低。", "label": "correlation"},
+    {"text": "运动频率增加后，体脂率通常下降。", "label": "correlation"},
+    {"text": "客服响应速度与用户满意度之间存在关系。", "label": "correlation"},
+    {"text": "促销力度越大，订单转化率越高。", "label": "correlation"},
+    {"text": "设备使用年限越长，故障率越高。", "label": "correlation"},
 ]
