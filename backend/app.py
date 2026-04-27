@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -36,7 +38,7 @@ def create_app() -> FastAPI:
     app.mount("/assets/uploads", StaticFiles(directory=ensure_upload_dir()), name="uploads")
 
     @app.get("/api/health")
-    def health_check() -> dict[str, str]:
+    def health_check() -> dict[str, Any]:
         return build_health_payload()
 
     @app.get("/api/pipeline")
