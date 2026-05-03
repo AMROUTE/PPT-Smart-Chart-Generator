@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 const file = ref(null);
 const slideNumber = ref(1);
@@ -11,7 +11,8 @@ const activeMode = ref("ppt");
 const semanticMode = ref("local");
 const demoText = ref("营收: 120\n成本: 80\n利润: 40");
 
-const themeMode = ref("dark");
+const themeMode = ref("light");
+const activePreview = ref("compare");
 const selectedModel = ref("flux");
 const selectedStyle = ref("tech");
 const controlNetEnabled = ref(true);
@@ -21,6 +22,8 @@ const generationRound = ref(0);
 const progressValue = ref(0);
 const stageCards = ref([]);
 const progressTimer = ref(null);
+const pageReady = ref(false);
+const fileInput = ref(null);
 
 const modelOptions = [
   { value: "flux", label: "Flux" },
@@ -42,6 +45,12 @@ const progressTemplate = [
   { stage: "generate_chart", label: "生成图表" },
   { stage: "generate_illustration", label: "生成配图" },
   { stage: "save_pptx", label: "输出结果" },
+];
+
+const previewTabs = [
+  { value: "chart", label: "图表" },
+  { value: "illustration", label: "配图" },
+  { value: "compare", label: "对比" },
 ];
 
 const candidateTemplates = [
@@ -87,6 +96,21 @@ const intentInfo = computed(() => pipelineResult.value?.intent ?? null);
 const semanticModeLabel = computed(() => (semanticMode.value === "qwen" ? "千问 API" : "本地规则"));
 const modelLabel = computed(() => (selectedModel.value === "flux" ? "Flux" : "通义万相"));
 const styleLabel = computed(() => styleOptions.find((item) => item.value === selectedStyle.value)?.label ?? "未知风格");
+const workflowStatus = computed(() => {
+  if (loading.value || demoLoading.value) return "处理中";
+  if (response.value) return "已完成";
+  return "就绪";
+});
+const primaryActionLabel = computed(() => (activeMode.value === "ppt" ? "生成 PPT 配图" : "生成演示图表"));
+const selectedCandidateScore = computed(() => selectedCandidate.value?.score ?? 0);
+const selectedCandidateHint = computed(() => selectedCandidate.value?.hint ?? "当前无候选项");
+const previewModeLabel = computed(() => previewTabs.find((item) => item.value === activePreview.value)?.label ?? "对比");
+
+onMounted(() => {
+  window.requestAnimationFrame(() => {
+    pageReady.value = true;
+  });
+});
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -177,6 +201,10 @@ const themeClass = computed(() => (themeMode.value === "dark" ? "theme-dark" : "
 function handleFileChange(event) {
   const [selected] = event.target.files || [];
   file.value = selected ?? null;
+}
+
+function openFilePicker() {
+  fileInput.value?.click();
 }
 
 function startProgress() {
@@ -289,7 +317,6 @@ async function runDemo() {
 }
 
 async function regenerateIllustration() {
-  generationRound.value += 1;
   selectedCandidateIndex.value = 0;
   if (activeMode.value === "ppt") {
     await submitForm();
@@ -313,498 +340,747 @@ function onStyleChange(value) {
 </script>
 
 <template>
-  <main :class="['page-shell', themeClass]">
-    <section class="hero-card">
-      <div class="hero-top">
+  <main :class="['app-shell', themeClass, { 'is-ready': pageReady }]">
+    <header class="appbar">
+      <div class="brand">
+        <div class="brand-mark">SC</div>
         <div>
-          <p class="eyebrow">Multi-modal Illustration Studio</p>
-          <h1>SmartChart 配图与 CLIP 交互面板</h1>
-          <p class="hero-copy">
-            你负责的部分会集中在配图、CLIP 分数、风格控制、模型切换和前端展示。
-          </p>
+          <h1>SmartChart Studio</h1>
+          <p>Multi-modal illustration workspace</p>
         </div>
-        <button class="theme-toggle" @click="toggleTheme">
-          {{ themeMode === "dark" ? "切换浅色" : "切换深色" }}
+      </div>
+
+      <div class="appbar-meta">
+        <span class="meta-pill">{{ workflowStatus }}</span>
+        <span class="meta-pill">{{ modelLabel }}</span>
+        <span class="meta-pill">{{ styleLabel }}</span>
+        <span class="meta-pill">{{ semanticModeLabel }}</span>
+      </div>
+
+      <div class="appbar-actions">
+        <button type="button" class="ghost-btn" @click="toggleTheme">
+          {{ themeMode === "dark" ? "浅色" : "深色" }}
+        </button>
+        <button
+          type="button"
+          class="primary-btn"
+          :disabled="loading || demoLoading"
+          @click="activeMode === 'ppt' ? submitForm() : runDemo()"
+        >
+          {{ primaryActionLabel }}
         </button>
       </div>
+    </header>
 
-      <div class="hero-stats">
-        <div class="stat-card">
-          <span>当前模型</span>
-          <strong>{{ modelLabel }}</strong>
-        </div>
-        <div class="stat-card">
-          <span>当前风格</span>
-          <strong>{{ styleLabel }}</strong>
-        </div>
-        <div class="stat-card">
-          <span>CLIP 分数</span>
-          <strong>{{ clipScoreText }}</strong>
-        </div>
-        <div class="stat-card">
-          <span>匹配状态</span>
-          <strong>{{ clipStatus }}</strong>
-        </div>
-      </div>
-    </section>
+    <section class="workspace">
+      <aside class="rail">
+        <div class="rail-block">
+          <div class="section-head">
+            <div>
+              <h2>输入</h2>
+              <p>切换来源、模型和生成方式。</p>
+            </div>
+            <span class="section-kicker">{{ activeMode === "ppt" ? "PPT" : "TEXT" }}</span>
+          </div>
 
-    <section class="workspace-grid">
-      <div class="panel panel-main">
-        <h2>上传与生成</h2>
+          <div class="mode-switch">
+            <button type="button" :class="{ active: activeMode === 'ppt' }" @click="activeMode = 'ppt'">
+              PPT 模式
+            </button>
+            <button type="button" :class="{ active: activeMode === 'demo' }" @click="activeMode = 'demo'">
+              文本演示
+            </button>
+          </div>
 
-        <div class="mode-switch">
-          <button :class="{ active: activeMode === 'ppt' }" @click="activeMode = 'ppt'">PPT 模式</button>
-          <button :class="{ active: activeMode === 'demo' }" @click="activeMode = 'demo'">文本演示</button>
+          <label class="field">
+            <span>语义分析模式</span>
+            <select v-model="semanticMode">
+              <option value="local">本地规则</option>
+              <option value="qwen">千问 API</option>
+            </select>
+          </label>
+
+          <template v-if="activeMode === 'ppt'">
+            <div class="field upload-field">
+              <span>PPT 文件</span>
+              <div class="upload-row">
+                <input
+                  ref="fileInput"
+                  class="visually-hidden"
+                  type="file"
+                  accept=".pptx"
+                  @change="handleFileChange"
+                />
+                <button type="button" class="upload-trigger" @click="openFilePicker">
+                  {{ fileInfo ? "重新选择" : "选择文件" }}
+                </button>
+                <div class="upload-copy">
+                  <strong>{{ fileInfo ? fileInfo.name : "未选择文件" }}</strong>
+                  <span>{{ fileInfo ? fileInfo.size : "支持 .pptx 文件上传" }}</span>
+                </div>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>处理页码</span>
+              <input v-model.number="slideNumber" type="number" min="1" />
+            </label>
+          </template>
+
+          <template v-else>
+            <label class="field">
+              <span>业务文本</span>
+              <textarea v-model="demoText" rows="8" placeholder="例如：营收: 120"></textarea>
+            </label>
+          </template>
+
+          <div class="button-row">
+            <button
+              type="button"
+              class="primary-btn"
+              :disabled="loading || demoLoading"
+              @click="activeMode === 'ppt' ? submitForm() : runDemo()"
+            >
+              {{ loading || demoLoading ? "处理中..." : primaryActionLabel }}
+            </button>
+            <button type="button" class="secondary-btn" :disabled="loading || demoLoading" @click="regenerateIllustration">
+              重新生成配图
+            </button>
+          </div>
+
+          <div class="progress-card">
+            <div class="progress-meta">
+              <span>处理进度 · {{ semanticModeLabel }}</span>
+              <strong>{{ progressValue }}%</strong>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" :style="{ width: `${progressValue}%` }"></div>
+            </div>
+          </div>
+
+          <p v-if="errorMessage" class="status error">{{ errorMessage }}</p>
         </div>
 
-        <label class="field">
-          <span>语义分析模式</span>
-          <select v-model="semanticMode">
-            <option value="local">本地规则</option>
-            <option value="qwen">千问 API</option>
-          </select>
-        </label>
+        <div class="rail-block">
+          <div class="section-head">
+            <div>
+              <h2>风格</h2>
+              <p>模型、风格和风控参数。</p>
+            </div>
+            <span class="section-kicker">STYLE</span>
+          </div>
 
-        <label class="field">
-          <span>配图模型</span>
-          <div class="chip-row">
+          <div class="chip-group">
             <button
               v-for="item in modelOptions"
               :key="item.value"
-              :class="{ chip: true, active: selectedModel === item.value }"
+              type="button"
+              class="chip-btn"
+              :class="{ active: selectedModel === item.value }"
               @click="selectedModel = item.value"
             >
               {{ item.label }}
             </button>
           </div>
-        </label>
 
-        <label class="field">
-          <span>风格选择</span>
-          <div class="chip-row wrap">
+          <div class="chip-group wrap">
             <button
               v-for="item in styleOptions"
               :key="item.value"
-              :class="{ chip: true, active: selectedStyle === item.value }"
+              type="button"
+              class="chip-btn"
+              :class="{ active: selectedStyle === item.value }"
               @click="onStyleChange(item.value)"
             >
               {{ item.label }}
             </button>
           </div>
-        </label>
 
-        <label class="field switch-row">
-          <span>ControlNet 风格控制</span>
-          <button class="switch-btn" @click="controlNetEnabled = !controlNetEnabled">
-            {{ controlNetEnabled ? "已开启" : "已关闭" }}
-          </button>
-        </label>
-
-        <label class="field">
-          <span>ControlNet 强度：{{ Math.round(controlNetStrength * 100) }}%</span>
-          <input v-model.number="controlNetStrength" type="range" min="0.1" max="1" step="0.01" />
-        </label>
-
-        <template v-if="activeMode === 'ppt'">
-          <label class="field">
-            <span>PPT 文件</span>
-            <input type="file" accept=".pptx" @change="handleFileChange" />
-          </label>
+          <div class="switch-row">
+            <span>ControlNet 风格控制</span>
+            <button type="button" class="switch-btn" @click="controlNetEnabled = !controlNetEnabled">
+              {{ controlNetEnabled ? "已开启" : "已关闭" }}
+            </button>
+          </div>
 
           <label class="field">
-            <span>处理页码</span>
-            <input v-model.number="slideNumber" type="number" min="1" />
+            <span>ControlNet 强度：{{ Math.round(controlNetStrength * 100) }}%</span>
+            <input v-model.number="controlNetStrength" type="range" min="0.1" max="1" step="0.01" />
           </label>
+        </div>
+      </aside>
 
-          <div class="button-row">
-            <button class="primary-btn" :disabled="loading" @click="submitForm">
-              {{ loading ? "处理中..." : "一键生成图表与配图" }}
-            </button>
-            <button class="secondary-btn" :disabled="loading" @click="regenerateIllustration">
-              重新生成配图
-            </button>
+      <section class="stage">
+        <div class="section-head stage-head">
+          <div>
+            <h2>预览画布</h2>
+            <p>图表、配图和对比视图会在这里同步展示。</p>
           </div>
-        </template>
-
-        <template v-else>
-          <label class="field">
-            <span>业务文本</span>
-            <textarea v-model="demoText" rows="6" placeholder="例如：营收: 120"></textarea>
-          </label>
-
-          <div class="button-row">
-            <button class="primary-btn" :disabled="demoLoading" @click="runDemo">
-              {{ demoLoading ? "生成中..." : "文本直出图表 PNG" }}
-            </button>
-            <button class="secondary-btn" :disabled="demoLoading" @click="regenerateIllustration">
-              重新生成配图
-            </button>
-          </div>
-        </template>
-
-        <div class="progress-card">
-          <div class="progress-meta">
-            <span>处理进度 · {{ semanticModeLabel }}</span>
-            <strong>{{ progressValue }}%</strong>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill" :style="{ width: `${progressValue}%` }"></div>
-          </div>
-        </div>
-
-        <p v-if="errorMessage" class="status error">{{ errorMessage }}</p>
-      </div>
-
-      <div class="panel">
-        <h2>当前配置</h2>
-        <div class="info-list">
-          <p><strong>模型：</strong>{{ modelLabel }}</p>
-          <p><strong>风格：</strong>{{ styleLabel }}</p>
-          <p><strong>ControlNet：</strong>{{ controlNetEnabled ? "开启" : "关闭" }}</p>
-          <p><strong>ControlNet 强度：</strong>{{ Math.round(controlNetStrength * 100) }}%</p>
-          <p><strong>生成轮次：</strong>{{ generationRound }}</p>
-          <p><strong>CLIP 评分：</strong>{{ clipScoreText }}</p>
-        </div>
-
-        <div v-if="fileInfo" class="info-list compact">
-          <p><strong>文件名：</strong>{{ fileInfo.name }}</p>
-          <p><strong>文件大小：</strong>{{ fileInfo.size }}</p>
-          <p><strong>文件类型：</strong>{{ fileInfo.type }}</p>
-          <p><strong>修改时间：</strong>{{ fileInfo.lastModified }}</p>
-          <p><strong>目标页码：</strong>{{ slideNumber }}</p>
-        </div>
-        <p v-else class="placeholder">上传文件后，这里会显示基础信息。</p>
-      </div>
-    </section>
-
-    <section class="result-grid">
-      <div class="panel preview-panel">
-        <div class="panel-head">
-          <h2>图表预览区</h2>
-          <span class="panel-badge">Chart Preview</span>
-        </div>
-        <img v-if="chartPreviewUrl" :src="chartPreviewUrl" alt="chart preview" class="preview-image" />
-        <div v-else class="empty-art chart-art">
-          <div class="chart-bars">
-            <span></span><span></span><span></span><span></span>
-          </div>
-          <p>图表结果将显示在这里</p>
-        </div>
-      </div>
-
-      <div class="panel preview-panel">
-        <div class="panel-head">
-          <h2>配图区</h2>
-          <span class="panel-badge">Illustration</span>
-        </div>
-        <img v-if="illustrationPreviewUrl" :src="illustrationPreviewUrl" alt="illustration preview" class="preview-image" />
-        <div v-else class="empty-art illustration-art">
-          <div class="orbit"></div>
-          <div class="orbit small"></div>
-          <p>配图结果将显示在这里</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="result-grid secondary-grid">
-      <div class="panel result-panel">
-        <div class="panel-head">
-          <h2>配图对比与 CLIP</h2>
-          <span class="panel-badge">Top-K</span>
-        </div>
-
-        <div class="clip-meter">
-          <div class="clip-meter-top">
-            <span>语义匹配度</span>
-            <strong>{{ clipScoreText }}</strong>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill clip-fill" :style="{ width: `${clipScorePercent}%` }"></div>
-          </div>
-          <p class="clip-note">当前结果：{{ clipStatus }}，可以通过风格和模型切换继续微调。</p>
-        </div>
-
-        <div class="candidate-grid">
-          <button
-            v-for="(item, index) in candidatePool"
-            :key="item.id"
-            class="candidate-card"
-            :class="{ active: selectedCandidateIndex === index }"
-            @click="selectCandidate(index)"
-          >
-            <div class="candidate-swatch" :style="{ background: `linear-gradient(135deg, ${item.tones[0]}, ${item.tones[1]})` }"></div>
-            <div class="candidate-body">
-              <div class="candidate-top">
-                <strong>{{ item.title }}</strong>
-                <span>{{ item.tag }}</span>
-              </div>
-              <p>{{ item.subtitle }}</p>
-              <div class="candidate-footer">
-                <span>{{ item.hint }}</span>
-                <strong>{{ item.score.toFixed(2) }}</strong>
-              </div>
+          <div class="stage-actions">
+            <span class="section-kicker">{{ previewModeLabel }}</span>
+            <div class="tab-switch">
+              <button
+                v-for="tab in previewTabs"
+                :key="tab.value"
+                type="button"
+                class="tab-btn"
+                :class="{ active: activePreview === tab.value }"
+                @click="activePreview = tab.value"
+              >
+                {{ tab.label }}
+              </button>
             </div>
-          </button>
-        </div>
-
-        <div v-if="selectedCandidate" class="selected-preview">
-          <div class="selected-preview-top">
-            <strong>{{ selectedCandidate.title }}</strong>
-            <span>Rank {{ selectedCandidate.rank }}</span>
-          </div>
-          <p>{{ selectedCandidate.subtitle }}</p>
-        </div>
-      </div>
-
-      <div class="panel result-panel">
-        <div class="panel-head">
-          <h2>Pipeline 日志与状态</h2>
-          <span class="panel-badge">Trace</span>
-        </div>
-
-        <div v-if="intentInfo" class="intent-card">
-          <p><strong>推荐图表：</strong>{{ intentInfo.chart_type }}</p>
-          <p><strong>语义来源：</strong>{{ intentInfo.source || "heuristic" }}</p>
-          <p><strong>判断依据：</strong>{{ intentInfo.reason || intentInfo.summary }}</p>
-          <p><strong>配图主题：</strong>{{ intentInfo.visual_theme || "未提供" }}</p>
-        </div>
-
-        <div class="stage-list">
-          <div v-for="item in stageCards" :key="item.stage + item.status" class="stage-item">
-            <span>{{ item.label }}</span>
-            <strong :class="`stage-${item.status}`">{{ item.status }}</strong>
           </div>
         </div>
 
-        <div v-if="recentLogs.length" class="log-list">
-          <p v-for="log in recentLogs" :key="log">{{ log }}</p>
-        </div>
-        <pre v-else-if="response">{{ JSON.stringify(response, null, 2) }}</pre>
-        <p v-else class="placeholder">处理完成后，这里会展示后端返回结构化结果和阶段日志。</p>
+        <div class="canvas-shell">
+          <Transition name="panel-swap" mode="out-in">
+            <div :key="activePreview" class="preview-switcher">
+              <template v-if="activePreview === 'chart'">
+                <div v-if="chartPreviewUrl" class="preview-frame reveal-frame">
+                  <img :src="chartPreviewUrl" alt="chart preview" />
+                </div>
+                <div v-else class="empty-state">
+                  <div class="empty-bars">
+                    <span></span><span></span><span></span><span></span>
+                  </div>
+                  <p>图表结果会显示在这里</p>
+                </div>
+              </template>
 
-        <a v-if="downloadUrl" :href="downloadUrl" class="download-link">下载增强版 PPT</a>
-      </div>
+              <template v-else-if="activePreview === 'illustration'">
+                <div v-if="illustrationPreviewUrl" class="preview-frame reveal-frame">
+                  <img :src="illustrationPreviewUrl" alt="illustration preview" />
+                </div>
+                <div v-else class="empty-state illustration-state">
+                  <div class="empty-illustration">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <p>配图结果会显示在这里</p>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="compare-grid">
+                  <article class="compare-panel">
+                    <div class="compare-head">
+                      <strong>图表</strong>
+                      <span>{{ chartPreviewUrl ? "已生成" : "等待生成" }}</span>
+                    </div>
+                    <div v-if="chartPreviewUrl" class="preview-frame small reveal-frame">
+                      <img :src="chartPreviewUrl" alt="chart preview" />
+                    </div>
+                    <div v-else class="empty-state small">
+                      <div class="empty-bars">
+                        <span></span><span></span><span></span><span></span>
+                      </div>
+                      <p>图表结果会显示在这里</p>
+                    </div>
+                  </article>
+
+                  <article class="compare-panel">
+                    <div class="compare-head">
+                      <strong>配图</strong>
+                      <span>{{ illustrationPreviewUrl ? "已生成" : "等待生成" }}</span>
+                    </div>
+                    <div v-if="illustrationPreviewUrl" class="preview-frame small reveal-frame">
+                      <img :src="illustrationPreviewUrl" alt="illustration preview" />
+                    </div>
+                    <div v-else class="empty-state small illustration-state">
+                      <div class="empty-illustration">
+                        <span></span><span></span><span></span>
+                      </div>
+                      <p>配图结果会显示在这里</p>
+                    </div>
+                  </article>
+                </div>
+              </template>
+            </div>
+          </Transition>
+        </div>
+
+        <div class="canvas-footer">
+          <span class="metric-chip">CLIP {{ clipScoreText }}</span>
+          <span class="metric-chip">{{ clipStatus }}</span>
+          <span class="metric-chip">轮次 {{ generationRound }}</span>
+          <span class="metric-chip">页码 {{ slideNumber }}</span>
+        </div>
+      </section>
+
+      <aside class="rail">
+        <div class="rail-block">
+          <div class="section-head">
+            <div>
+              <h2>结果摘要</h2>
+              <p>配置、匹配度和当前候选项。</p>
+            </div>
+            <span class="section-kicker">{{ workflowStatus }}</span>
+          </div>
+
+          <div class="summary-list">
+            <div class="summary-item">
+              <span>模型</span>
+              <strong>{{ modelLabel }}</strong>
+            </div>
+            <div class="summary-item">
+              <span>风格</span>
+              <strong>{{ styleLabel }}</strong>
+            </div>
+            <div class="summary-item">
+              <span>ControlNet</span>
+              <strong>{{ controlNetEnabled ? "开启" : "关闭" }}</strong>
+            </div>
+            <div class="summary-item">
+              <span>ControlNet 强度</span>
+              <strong>{{ Math.round(controlNetStrength * 100) }}%</strong>
+            </div>
+            <div class="summary-item">
+              <span>CLIP 评分</span>
+              <strong>{{ clipScoreText }}</strong>
+            </div>
+            <div class="summary-item">
+              <span>语义模式</span>
+              <strong>{{ semanticModeLabel }}</strong>
+            </div>
+          </div>
+
+          <div v-if="fileInfo" class="file-card">
+            <p><span>文件名</span><strong>{{ fileInfo.name }}</strong></p>
+            <p><span>文件大小</span><strong>{{ fileInfo.size }}</strong></p>
+            <p><span>文件类型</span><strong>{{ fileInfo.type }}</strong></p>
+            <p><span>修改时间</span><strong>{{ fileInfo.lastModified }}</strong></p>
+            <p><span>目标页码</span><strong>{{ slideNumber }}</strong></p>
+          </div>
+
+          <div class="clip-meter">
+            <div class="clip-meter-top">
+              <span>语义匹配度</span>
+              <strong>{{ clipScoreText }}</strong>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill clip-fill" :style="{ width: `${clipScorePercent}%` }"></div>
+            </div>
+            <p class="clip-note">当前结果：{{ clipStatus }}</p>
+          </div>
+
+          <div class="candidate-list">
+            <button
+              v-for="(item, index) in candidatePool"
+              :key="item.id"
+              type="button"
+              class="candidate-row"
+              :class="{ active: selectedCandidateIndex === index }"
+              @click="selectCandidate(index)"
+            >
+              <div class="candidate-swatch" :style="{ background: `linear-gradient(135deg, ${item.tones[0]}, ${item.tones[1]})` }"></div>
+              <div class="candidate-copy">
+                <div class="candidate-title">
+                  <strong>{{ item.title }}</strong>
+                  <span>{{ item.score.toFixed(2) }}</span>
+                </div>
+                <p>{{ item.subtitle }}</p>
+                <div class="candidate-bar">
+                  <span :style="{ width: `${Math.round(item.score * 100)}%` }"></span>
+                </div>
+              </div>
+            </button>
+          </div>
+
+          <div v-if="selectedCandidate" class="candidate-detail">
+            <div class="candidate-detail-head">
+              <strong>{{ selectedCandidate.title }}</strong>
+              <span>Rank {{ selectedCandidate.rank }}</span>
+            </div>
+            <p>{{ selectedCandidate.subtitle }}</p>
+            <div class="candidate-detail-meta">
+              <span>{{ selectedCandidateHint }}</span>
+              <strong>{{ selectedCandidateScore.toFixed(2) }}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail-block">
+          <div class="section-head">
+            <div>
+              <h2>流程轨迹</h2>
+              <p>语义判断、生成步骤与输出日志。</p>
+            </div>
+            <span class="section-kicker">TRACE</span>
+          </div>
+
+          <div v-if="intentInfo" class="intent-card">
+            <p><span>推荐图表</span><strong>{{ intentInfo.chart_type }}</strong></p>
+            <p><span>语义来源</span><strong>{{ intentInfo.source || 'heuristic' }}</strong></p>
+            <p><span>判断依据</span><strong>{{ intentInfo.reason || intentInfo.summary }}</strong></p>
+            <p><span>配图主题</span><strong>{{ intentInfo.visual_theme || '未提供' }}</strong></p>
+          </div>
+
+          <div class="stage-list">
+            <div v-for="item in stageCards" :key="item.stage + item.status" class="stage-item">
+              <span>{{ item.label }}</span>
+              <strong :class="`stage-${item.status}`">{{ item.status }}</strong>
+            </div>
+          </div>
+
+          <div v-if="recentLogs.length" class="log-list">
+            <p v-for="log in recentLogs" :key="log">{{ log }}</p>
+          </div>
+          <pre v-else-if="response">{{ JSON.stringify(response, null, 2) }}</pre>
+          <p v-else class="placeholder">处理完成后，这里会展示后端返回结构化结果和阶段日志。</p>
+
+          <a v-if="downloadUrl" :href="downloadUrl" class="download-link">下载增强版 PPT</a>
+        </div>
+      </aside>
     </section>
   </main>
 </template>
 
 <style scoped>
-.page-shell {
-  --bg-0: #07111f;
-  --bg-1: #0d1b2a;
-  --bg-2: rgba(10, 18, 32, 0.72);
-  --card: rgba(14, 24, 41, 0.82);
-  --card-border: rgba(148, 163, 184, 0.14);
-  --text: #e5eefb;
-  --muted: #8ea2bf;
-  --accent: #7dd3fc;
-  --accent-2: #f59e0b;
-  --shadow: 0 28px 80px rgba(2, 8, 20, 0.42);
+.app-shell {
+  --bg: #f6f8fb;
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-strong: #ffffff;
+  --surface-soft: rgba(255, 255, 255, 0.7);
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: rgba(15, 23, 42, 0.08);
+  --accent: #1a73e8;
+  --accent-strong: #0f5de7;
+  --accent-weak: rgba(26, 115, 232, 0.12);
+  --shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
   min-height: 100vh;
-  padding: 36px 20px 56px;
   color: var(--text);
-  background:
-    radial-gradient(circle at 12% 8%, rgba(245, 158, 11, 0.16), transparent 26%),
-    radial-gradient(circle at 88% 14%, rgba(59, 130, 246, 0.2), transparent 22%),
-    linear-gradient(160deg, #050b15 0%, #0f172a 48%, #09111f 100%);
+  background: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
 }
 
-.page-shell.theme-light {
-  --bg-0: #f8fbff;
-  --bg-1: #eef4ff;
-  --bg-2: rgba(255, 255, 255, 0.72);
-  --card: rgba(255, 255, 255, 0.82);
-  --card-border: rgba(15, 23, 42, 0.08);
-  --text: #102033;
-  --muted: #55657b;
-  --accent: #2563eb;
-  --accent-2: #ea580c;
-  --shadow: 0 20px 60px rgba(30, 60, 90, 0.12);
-  background:
-    radial-gradient(circle at 12% 8%, rgba(255, 214, 153, 0.42), transparent 28%),
-    radial-gradient(circle at 88% 14%, rgba(120, 177, 255, 0.24), transparent 22%),
-    linear-gradient(160deg, #f7f2ea 0%, #eef4ff 48%, #f7fbff 100%);
+.app-shell.theme-dark {
+  --bg: #0b1220;
+  --surface: rgba(15, 23, 42, 0.84);
+  --surface-strong: #111827;
+  --surface-soft: rgba(15, 23, 42, 0.64);
+  --text: #e5eefb;
+  --muted: #9aa7b7;
+  --border: rgba(148, 163, 184, 0.16);
+  --accent: #6ea8fe;
+  --accent-strong: #4d8df7;
+  --accent-weak: rgba(110, 168, 254, 0.14);
+  --shadow: 0 18px 44px rgba(2, 6, 23, 0.42);
+  background: linear-gradient(180deg, #0b1220 0%, #111827 100%);
 }
 
-.hero-card,
-.panel {
-  border: 1px solid var(--card-border);
-  border-radius: 24px;
-  background: var(--card);
-  backdrop-filter: blur(18px);
-  box-shadow: var(--shadow);
-}
-
-.hero-card {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 28px 30px 24px;
-}
-
-.hero-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 16px;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  backdrop-filter: blur(20px);
 }
 
-.eyebrow {
-  margin: 0 0 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  font-size: 12px;
-  color: var(--accent-2);
-}
-
-.hero-card h1 {
-  margin: 0;
-  font-size: clamp(30px, 4vw, 54px);
-  line-height: 1.04;
-}
-
-.hero-copy {
-  max-width: 760px;
-  margin: 14px 0 0;
-  color: var(--muted);
-  line-height: 1.7;
-}
-
-.theme-toggle {
-  border: 1px solid var(--card-border);
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
-  color: var(--text);
-  padding: 10px 16px;
-  cursor: pointer;
-}
-
-.hero-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 20px;
-}
-
-.stat-card {
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--card-border);
-}
-
-.stat-card span,
-.field span,
-.placeholder,
-.info-list p,
-.intent-card p,
-.stage-item span,
-.candidate-body p,
-.clip-note,
-.selected-preview p,
-.hero-copy {
-  color: var(--muted);
-}
-
-.stat-card strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 18px;
-  color: var(--text);
-}
-
-.workspace-grid,
-.result-grid {
-  max-width: 1180px;
-  margin: 20px auto 0;
-  display: grid;
-  gap: 18px;
-}
-
-.workspace-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.result-grid {
-  grid-template-columns: 1.3fr 1fr;
-}
-
-.secondary-grid {
-  align-items: start;
-}
-
-.panel {
-  padding: 22px;
-}
-
-.panel-main {
-  min-height: 100%;
-}
-
-.panel h2 {
-  margin: 0;
-  font-size: 21px;
-}
-
-.panel-head {
+.brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
 }
 
-.panel-badge {
-  padding: 6px 10px;
-  border-radius: 999px;
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent), #10b981);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.brand p {
+  margin: 3px 0 0;
   font-size: 12px;
-  color: var(--text);
-  background: rgba(125, 211, 252, 0.14);
-  border: 1px solid rgba(125, 211, 252, 0.22);
+  color: var(--muted);
 }
 
-.mode-switch,
-.chip-row,
-.button-row {
+.appbar-meta {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.meta-pill,
+.section-kicker,
+.metric-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-weak);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.meta-pill {
+  padding: 8px 12px;
+}
+
+.appbar-actions {
+  display: flex;
+  align-items: center;
   gap: 10px;
 }
 
-.chip-row.wrap {
-  flex-wrap: wrap;
-}
-
-.mode-switch {
-  margin: 16px 0 18px;
-}
-
-.mode-switch button,
-.chip,
-.switch-btn,
+.ghost-btn,
+.primary-btn,
 .secondary-btn,
-.primary-btn {
-  border-radius: 999px;
-  border: 1px solid var(--card-border);
+.mode-switch button,
+.chip-btn,
+.tab-btn,
+.switch-btn,
+.upload-trigger {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font: inherit;
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.ghost-btn,
+.secondary-btn,
+.mode-switch button,
+.chip-btn,
+.tab-btn,
+.switch-btn,
+.upload-trigger {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.ghost-btn,
+.primary-btn,
+.secondary-btn {
+  padding: 10px 14px;
   cursor: pointer;
-  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  font-weight: 600;
 }
 
-.mode-switch button {
-  padding: 10px 16px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--muted);
-}
-
-.mode-switch button.active,
-.chip.active {
-  background: linear-gradient(135deg, var(--accent), #60a5fa);
-  color: #fff;
+.primary-btn {
   border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  background-size: 160% 160%;
+  color: #ffffff;
+  box-shadow: 0 12px 24px rgba(26, 115, 232, 0.24);
+}
+
+.secondary-btn {
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  border-color: var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.ghost-btn:hover:not(:disabled),
+.primary-btn:hover:not(:disabled),
+.secondary-btn:hover:not(:disabled),
+.mode-switch button:hover,
+.chip-btn:hover,
+.tab-btn:hover,
+.switch-btn:hover,
+.upload-trigger:hover {
+  transform: translateY(-1px);
+}
+
+.ghost-btn:hover:not(:disabled),
+.secondary-btn:hover:not(:disabled),
+.mode-switch button:hover,
+.chip-btn:hover,
+.tab-btn:hover,
+.switch-btn:hover {
+  border-color: rgba(26, 115, 232, 0.28);
+  background: rgba(26, 115, 232, 0.06);
+}
+
+.primary-btn:focus-visible,
+.secondary-btn:focus-visible,
+.ghost-btn:focus-visible,
+.mode-switch button:focus-visible,
+.chip-btn:focus-visible,
+.tab-btn:focus-visible,
+.switch-btn:focus-visible,
+.upload-trigger:focus-visible {
+  outline: 2px solid rgba(26, 115, 232, 0.35);
+  outline-offset: 2px;
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled,
+.ghost-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+  box-shadow: none;
+}
+
+.workspace {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 16px 20px 28px;
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) minmax(300px, 360px);
+  gap: 16px;
+  align-items: start;
+}
+
+.rail,
+.stage {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
+}
+
+.rail {
+  position: sticky;
+  top: 76px;
+  padding: 14px;
+  align-self: start;
+}
+
+.stage {
+  min-height: calc(100vh - 140px);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rail-block + .rail-block {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.section-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .field {
   display: grid;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+}
+
+.upload-field {
+  gap: 8px;
+}
+
+.upload-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.upload-trigger {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 10px 18px rgba(26, 115, 232, 0.16);
+  transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+}
+
+.upload-trigger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px rgba(26, 115, 232, 0.18);
+}
+
+.upload-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.upload-copy strong,
+.upload-copy span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.upload-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.upload-copy span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.field span,
+.summary-item span,
+.file-card span,
+.intent-card span,
+.candidate-copy p,
+.candidate-detail p,
+.clip-note,
+.placeholder,
+.compare-head span,
+.candidate-detail-meta span,
+.candidate-title span,
+.brand p {
+  color: var(--muted);
 }
 
 .field textarea,
@@ -812,15 +1088,15 @@ function onStyleChange(value) {
 .field input[type="number"],
 .field input[type="file"] {
   width: 100%;
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
   color: var(--text);
-  padding: 12px 14px;
+  padding: 11px 12px;
 }
 
 .field textarea {
-  min-height: 132px;
+  min-height: 128px;
   resize: vertical;
 }
 
@@ -829,201 +1105,189 @@ function onStyleChange(value) {
   accent-color: var(--accent);
 }
 
+.mode-switch,
+.chip-group,
+.tab-switch,
+.button-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mode-switch {
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.mode-switch button,
+.chip-btn,
+.tab-btn,
+.switch-btn {
+  min-height: 38px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.mode-switch button {
+  flex: 1;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.mode-switch button.active,
+.chip-btn.active,
+.tab-btn.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(26, 115, 232, 0.18);
+}
+
+.mode-switch button.active {
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  color: var(--text);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.chip-btn {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.chip-btn.active {
+  box-shadow: 0 8px 18px rgba(26, 115, 232, 0.18);
+}
+
+.switch-btn,
+.tab-btn {
+  border-color: var(--border);
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.switch-btn {
+  font-weight: 600;
+}
+
+.tab-btn.active {
+  box-shadow: 0 8px 18px rgba(26, 115, 232, 0.18);
+}
+
 .switch-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.switch-btn {
-  background: rgba(255, 255, 255, 0.06);
+  gap: 12px;
+  margin: 8px 0 10px;
   color: var(--text);
-  padding: 10px 14px;
-}
-
-.chip {
-  padding: 9px 14px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-}
-
-.button-row {
-  margin-top: 6px;
-}
-
-.primary-btn,
-.secondary-btn {
-  flex: 1;
-  padding: 13px 16px;
-  font-weight: 700;
-}
-
-.primary-btn {
-  background: linear-gradient(135deg, #ff9b54 0%, #ea580c 100%);
-  color: #fffdf8;
-  box-shadow: 0 16px 30px rgba(234, 88, 12, 0.25);
-}
-
-.secondary-btn {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.primary-btn:hover:not(:disabled),
-.secondary-btn:hover:not(:disabled),
-.chip:hover,
-.mode-switch button:hover,
-.switch-btn:hover {
-  transform: translateY(-1px);
-}
-
-.primary-btn:disabled,
-.secondary-btn:disabled {
-  cursor: wait;
-  opacity: 0.7;
 }
 
 .progress-card {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 
 .progress-meta,
-.clip-meter-top {
+.clip-meter-top,
+.candidate-title,
+.candidate-detail-head,
+.candidate-detail-meta,
+.compare-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.progress-meta {
   margin-bottom: 8px;
 }
 
 .progress-track {
-  height: 12px;
+  height: 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--accent-weak);
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #f59e0b 0%, #60a5fa 100%);
-  transition: width 0.3s ease;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--accent), #10b981),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0 8px, transparent 8px 16px);
+  background-size: 100% 100%, 24px 24px;
+  transition: width 0.24s ease;
 }
 
 .clip-fill {
-  background: linear-gradient(90deg, #22c55e 0%, #38bdf8 100%);
+  background:
+    linear-gradient(90deg, #10b981, var(--accent)),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.22) 0 8px, transparent 8px 16px);
 }
 
-.info-list {
+.status.error {
+  margin-top: 12px;
+  color: #e11d48;
+}
+
+.summary-list {
   display: grid;
-  gap: 8px;
-  padding-top: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.info-list.compact {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--card-border);
+.summary-item,
+.file-card,
+.clip-meter,
+.candidate-detail,
+.intent-card,
+.compare-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
 }
 
-.preview-panel {
-  min-height: 360px;
+.summary-item {
+  padding: 10px 12px;
 }
 
-.preview-image {
-  width: 100%;
-  height: 300px;
-  object-fit: cover;
-  border-radius: 18px;
-  border: 1px solid var(--card-border);
-  background: rgba(255, 255, 255, 0.04);
+.summary-item strong,
+.file-card strong,
+.intent-card strong,
+.candidate-detail strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-weight: 600;
 }
 
-.empty-art {
-  display: grid;
-  place-items: center;
-  height: 300px;
-  border-radius: 18px;
-  border: 1px dashed var(--card-border);
-  background: rgba(255, 255, 255, 0.04);
-  text-align: center;
+.file-card {
+  margin-top: 12px;
+  padding: 12px;
 }
 
-.chart-art {
-  gap: 18px;
+.file-card p,
+.intent-card p {
+  margin: 0 0 10px;
 }
 
-.chart-bars {
-  display: flex;
-  align-items: end;
-  gap: 12px;
-  height: 140px;
-}
-
-.chart-bars span {
-  width: 42px;
-  border-radius: 14px 14px 4px 4px;
-  background: linear-gradient(180deg, #7dd3fc, #2563eb);
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.3);
-}
-
-.chart-bars span:nth-child(1) {
-  height: 78px;
-}
-
-.chart-bars span:nth-child(2) {
-  height: 120px;
-}
-
-.chart-bars span:nth-child(3) {
-  height: 92px;
-}
-
-.chart-bars span:nth-child(4) {
-  height: 150px;
-}
-
-.illustration-art {
-  position: relative;
-  overflow: hidden;
-}
-
-.illustration-art::before {
-  content: "";
-  position: absolute;
-  inset: 20px;
-  border-radius: 28px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.24), rgba(168, 85, 247, 0.16));
-  filter: blur(0.2px);
-}
-
-.orbit {
-  position: absolute;
-  width: 150px;
-  height: 150px;
-  border-radius: 50%;
-  border: 2px solid rgba(125, 211, 252, 0.26);
-  animation: spin 8s linear infinite;
-}
-
-.orbit.small {
-  width: 84px;
-  height: 84px;
-  animation-direction: reverse;
-}
-
-.empty-art p {
-  position: relative;
-  z-index: 1;
-  margin: 0;
+.file-card p:last-child,
+.intent-card p:last-child {
+  margin-bottom: 0;
 }
 
 .clip-meter {
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--card-border);
-  margin-bottom: 16px;
+  margin-top: 12px;
+  padding: 12px;
 }
 
 .clip-meter strong {
@@ -1032,83 +1296,252 @@ function onStyleChange(value) {
 
 .clip-note {
   margin: 10px 0 0;
+  font-size: 12px;
 }
 
-.candidate-grid {
+.candidate-list {
   display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.candidate-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 12px;
-}
-
-.candidate-card {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 14px;
   width: 100%;
+  padding: 10px;
   text-align: left;
-  padding: 12px;
-  border-radius: 18px;
-  border: 1px solid var(--card-border);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  cursor: pointer;
 }
 
-.candidate-card.active {
-  border-color: rgba(125, 211, 252, 0.45);
-  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.2) inset;
+.candidate-row.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-weak) inset;
 }
 
 .candidate-swatch {
-  min-height: 100px;
-  border-radius: 14px;
+  min-height: 64px;
+  border-radius: 10px;
 }
 
-.candidate-body {
+.candidate-copy {
   display: grid;
+  gap: 6px;
+}
+
+.candidate-title strong,
+.candidate-detail-head strong,
+.compare-head strong {
+  color: var(--text);
+}
+
+.candidate-copy p,
+.candidate-detail p,
+.intent-card p {
+  margin: 0;
+  line-height: 1.55;
+  font-size: 12px;
+}
+
+.candidate-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent-weak);
+  overflow: hidden;
+}
+
+.candidate-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--accent), #10b981),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0 8px, transparent 8px 16px);
+  background-size: 100% 100%, 24px 24px;
+}
+
+.candidate-detail {
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.candidate-detail-head,
+.candidate-detail-meta,
+.compare-head {
+  margin-bottom: 8px;
+}
+
+.candidate-detail-meta {
+  margin-top: 10px;
+}
+
+.section-kicker,
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+}
+
+.stage-head {
+  margin-bottom: 0;
+}
+
+.stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.canvas-shell {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  padding: 14px;
+}
+
+.preview-frame,
+.empty-state,
+.compare-panel .preview-frame.small,
+.compare-panel .empty-state.small {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+}
+
+.preview-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 20px;
+}
+
+.empty-bars,
+.empty-illustration {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 10px;
+  height: 118px;
+}
+
+.empty-bars span {
+  width: 28px;
+  border-radius: 10px 10px 4px 4px;
+  background: linear-gradient(180deg, var(--accent), #10b981);
+}
+
+.empty-bars span:nth-child(1) {
+  height: 56px;
+}
+
+.empty-bars span:nth-child(2) {
+  height: 90px;
+}
+
+.empty-bars span:nth-child(3) {
+  height: 72px;
+}
+
+.empty-bars span:nth-child(4) {
+  height: 110px;
+}
+
+.empty-illustration span {
+  width: 56px;
+  height: 86px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(26, 115, 232, 0.9), rgba(16, 185, 129, 0.82));
+}
+
+.empty-illustration span:nth-child(2) {
+  height: 112px;
+}
+
+.empty-illustration span:nth-child(3) {
+  height: 68px;
+}
+
+.empty-state p {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.compare-panel {
+  padding: 12px;
+}
+
+.compare-head {
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.compare-head span {
+  font-size: 12px;
+}
+
+.canvas-footer {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.candidate-top,
-.candidate-footer,
-.selected-preview-top {
+.metric-chip {
+  padding: 8px 10px;
+}
+
+.rail-block p:last-child {
+  margin-bottom: 0;
+}
+
+.intent-card {
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.intent-card p {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.candidate-body p {
-  margin: 0;
+.intent-card span {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
-.candidate-footer strong {
-  font-size: 18px;
-}
-
-.selected-preview {
-  margin-top: 14px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--card-border);
-}
-
-.intent-card {
-  margin-bottom: 16px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--card-border);
-}
-
-.intent-card p {
-  margin: 0 0 8px;
-  line-height: 1.6;
+.intent-card strong {
+  text-align: right;
 }
 
 .stage-list {
   display: grid;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .stage-item {
@@ -1116,113 +1549,525 @@ function onStyleChange(value) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--card-border);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  font-size: 12px;
 }
 
 .stage-completed {
-  color: #4ade80;
+  color: #16a34a;
 }
 
 .stage-running,
 .stage-retrying {
-  color: #f59e0b;
+  color: #d97706;
 }
 
 .stage-pending {
-  color: #94a3b8;
+  color: var(--muted);
 }
 
 .stage-failed {
-  color: #fb7185;
+  color: #e11d48;
 }
 
 .log-list {
-  max-height: 240px;
+  max-height: 220px;
   overflow: auto;
-  border-radius: 18px;
-  background: rgba(2, 6, 23, 0.75);
-  padding: 14px 16px;
-  border: 1px solid var(--card-border);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.94);
+  color: #e2e8f0;
 }
 
 .log-list p {
   margin: 0 0 8px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 .download-link {
   display: inline-flex;
-  margin-top: 16px;
+  margin-top: 12px;
   color: var(--accent);
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   text-decoration: none;
-}
-
-.status.error {
-  color: #fb7185;
 }
 
 pre {
   margin: 0;
-  max-height: 360px;
+  max-height: 240px;
   overflow: auto;
-  border-radius: 18px;
-  background: rgba(2, 6, 23, 0.9);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.94);
   color: #e2e8f0;
-  padding: 18px;
+  font-size: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.placeholder {
   font-size: 13px;
+  margin: 0;
 }
 
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
+@media (max-width: 1320px) {
+  .workspace {
+    grid-template-columns: 1fr;
   }
-  to {
-    transform: rotate(360deg);
+
+  .rail,
+  .stage {
+    position: static;
+  }
+
+  .stage {
+    min-height: auto;
   }
 }
 
-@media (max-width: 1060px) {
-  .hero-stats,
-  .workspace-grid,
-  .result-grid {
+@media (max-width: 840px) {
+  .appbar {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .appbar-meta {
+    justify-content: flex-start;
+  }
+
+  .appbar-actions {
+    width: 100%;
+  }
+
+  .appbar-actions .primary-btn,
+  .appbar-actions .ghost-btn {
+    flex: 1;
+  }
+
+  .summary-list,
+  .compare-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
-  .page-shell {
-    padding: 20px 12px 40px;
+  .workspace {
+    padding: 12px;
   }
 
-  .hero-card,
-  .panel {
-    border-radius: 20px;
-    padding: 18px;
-  }
-
-  .hero-top,
-  .panel-head,
-  .progress-meta,
-  .clip-meter-top,
-  .candidate-top,
-  .candidate-footer,
-  .selected-preview-top,
-  .switch-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .candidate-card {
-    grid-template-columns: 1fr;
+  .rail,
+  .stage {
+    padding: 12px;
+    border-radius: 12px;
   }
 
   .button-row,
-  .mode-switch {
+  .mode-switch,
+  .chip-group,
+  .tab-switch,
+  .appbar-actions {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .candidate-row {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-frame,
+  .empty-state,
+  .compare-panel .preview-frame.small,
+  .compare-panel .empty-state.small {
+    aspect-ratio: 4 / 3;
+  }
+}
+
+.app-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(26, 115, 232, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26, 115, 232, 0.05) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 82%);
+  opacity: 0.35;
+  animation: gridDrift 32s linear infinite;
+}
+
+.app-shell.theme-dark::before {
+  opacity: 0.2;
+  background-image:
+    linear-gradient(rgba(110, 168, 254, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(110, 168, 254, 0.08) 1px, transparent 1px);
+}
+
+.app-shell.is-ready .appbar {
+  animation: floatIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.app-shell.is-ready .workspace > .rail:first-child {
+  animation: floatIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both 0.08s;
+}
+
+.app-shell.is-ready .workspace > .stage {
+  animation: floatIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both 0.16s;
+}
+
+.app-shell.is-ready .workspace > .rail:last-child {
+  animation: floatIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both 0.24s;
+}
+
+.rail,
+.stage {
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+}
+
+.rail:hover,
+.stage:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.1);
+}
+
+.rail-block {
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.app-shell.is-ready .rail-block {
+  animation: riseIn 0.42s ease both;
+}
+
+.app-shell.is-ready .rail-block:nth-child(1) {
+  animation-delay: 0.1s;
+}
+
+.app-shell.is-ready .rail-block:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.app-shell.is-ready .summary-item {
+  animation: riseIn 0.42s ease both;
+}
+
+.app-shell.is-ready .summary-item:nth-child(1) {
+  animation-delay: 0.08s;
+}
+
+.app-shell.is-ready .summary-item:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.app-shell.is-ready .summary-item:nth-child(3) {
+  animation-delay: 0.16s;
+}
+
+.app-shell.is-ready .summary-item:nth-child(4) {
+  animation-delay: 0.2s;
+}
+
+.app-shell.is-ready .summary-item:nth-child(5) {
+  animation-delay: 0.24s;
+}
+
+.app-shell.is-ready .summary-item:nth-child(6) {
+  animation-delay: 0.28s;
+}
+
+.summary-item:hover,
+.candidate-row:hover,
+.compare-panel:hover {
+  transform: translateY(-2px);
+  border-color: rgba(26, 115, 232, 0.26);
+}
+
+.primary-btn {
+  background-size: 180% 180%;
+  animation: gradientSweep 8s ease infinite;
+}
+
+.progress-fill {
+  background-size: 100% 100%, 24px 24px;
+  animation: stripeShift 1.6s linear infinite;
+}
+
+.candidate-row {
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.app-shell.is-ready .candidate-row {
+  animation: riseIn 0.42s ease both;
+}
+
+.app-shell.is-ready .candidate-row:nth-child(1) {
+  animation-delay: 0.08s;
+}
+
+.app-shell.is-ready .candidate-row:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.app-shell.is-ready .candidate-row:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.candidate-swatch {
+  transition: transform 220ms ease, filter 220ms ease;
+}
+
+.candidate-row:hover .candidate-swatch,
+.candidate-row.active .candidate-swatch {
+  transform: scale(1.03);
+  filter: saturate(1.08);
+}
+
+.candidate-bar span {
+  background-size: 100% 100%, 24px 24px;
+  animation: stripeShift 1.8s linear infinite;
+}
+
+.candidate-detail,
+.file-card,
+.clip-meter,
+.intent-card,
+.compare-panel {
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.canvas-shell {
+  overflow: hidden;
+}
+
+.preview-switcher {
+  width: 100%;
+}
+
+.reveal-frame {
+  animation: revealScale 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.panel-swap-enter-active,
+.panel-swap-leave-active {
+  transition: opacity 240ms ease, transform 240ms ease;
+}
+
+.panel-swap-enter-from,
+.panel-swap-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.985);
+}
+
+.panel-swap-enter-to,
+.panel-swap-leave-from {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.preview-frame,
+.empty-state,
+.compare-panel .preview-frame.small,
+.compare-panel .empty-state.small {
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+}
+
+.preview-frame:hover,
+.compare-panel:hover .preview-frame,
+.compare-panel:hover .empty-state {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.empty-bars span {
+  transform-origin: bottom;
+  animation: barPulse 1.55s ease-in-out infinite;
+}
+
+.empty-bars span:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.empty-bars span:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.empty-bars span:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+.empty-illustration span {
+  animation: floatUp 2.8s ease-in-out infinite;
+}
+
+.empty-illustration span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.empty-illustration span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.metric-chip {
+  animation: chipGlow 4s ease-in-out infinite;
+}
+
+.log-list {
+  animation: fadeIn 0.45s ease both;
+}
+
+.download-link {
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.download-link:hover {
+  transform: translateY(-1px);
+}
+
+.app-shell.is-ready .stage-item {
+  animation: riseIn 0.4s ease both;
+}
+
+.app-shell.is-ready .stage-item:nth-child(1) {
+  animation-delay: 0.06s;
+}
+
+.app-shell.is-ready .stage-item:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.app-shell.is-ready .stage-item:nth-child(3) {
+  animation-delay: 0.14s;
+}
+
+.app-shell.is-ready .stage-item:nth-child(4) {
+  animation-delay: 0.18s;
+}
+
+.app-shell.is-ready .stage-item:nth-child(5) {
+  animation-delay: 0.22s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes floatIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes gridDrift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(36px, 36px, 0);
+  }
+}
+
+@keyframes stripeShift {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 0 0, 24px 0;
+  }
+}
+
+@keyframes barPulse {
+  0%,
+  100% {
+    transform: scaleY(0.92);
+  }
+  50% {
+    transform: scaleY(1.04);
+  }
+}
+
+@keyframes floatUp {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes chipGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(26, 115, 232, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(26, 115, 232, 0.04);
+  }
+}
+
+@keyframes gradientSweep {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes revealScale {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 </style>
