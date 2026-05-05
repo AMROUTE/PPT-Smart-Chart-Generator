@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 const file = ref(null);
 const slideNumber = ref(1);
@@ -25,6 +25,23 @@ const progressTimer = ref(null);
 const pageReady = ref(false);
 const fileInput = ref(null);
 
+const pageOptions = [
+  { value: "home", label: "首页" },
+  { value: "workspace", label: "生成工作台" },
+  { value: "report", label: "质量报告" },
+  { value: "docs", label: "使用说明" },
+];
+
+const validPages = pageOptions.map((item) => item.value);
+
+function getPageFromHash() {
+  if (typeof window === "undefined") return "home";
+  const page = window.location.hash.replace(/^#\/?/, "");
+  return validPages.includes(page) ? page : "home";
+}
+
+const currentPage = ref(getPageFromHash());
+
 const modelOptions = [
   { value: "flux", label: "Flux" },
   { value: "wanxiang", label: "通义万相" },
@@ -37,6 +54,51 @@ const styleOptions = [
   { value: "education", label: "教育卡片" },
   { value: "medical", label: "医疗关怀" },
   { value: "neo", label: "赛博蓝紫" },
+];
+
+const styleGuideCards = [
+  {
+    value: "tech",
+    label: "科技数据",
+    glyph: "◧",
+    accent: ["#1a73e8", "#10b981"],
+    copy: "适合数据看板、图表和信息密度较高的页面。",
+  },
+  {
+    value: "business",
+    label: "商务增长",
+    glyph: "↗",
+    accent: ["#f59e0b", "#ef4444"],
+    copy: "适合汇报、销售和增长叙事，强调商业感。",
+  },
+  {
+    value: "minimal",
+    label: "极简信息图",
+    glyph: "□",
+    accent: ["#64748b", "#38bdf8"],
+    copy: "适合说明型内容，强调留白、秩序和阅读性。",
+  },
+  {
+    value: "education",
+    label: "教育卡片",
+    glyph: "✎",
+    accent: ["#6366f1", "#0ea5e9"],
+    copy: "适合知识讲解、流程说明和教学类内容。",
+  },
+  {
+    value: "medical",
+    label: "医疗关怀",
+    glyph: "✚",
+    accent: ["#10b981", "#14b8a6"],
+    copy: "适合健康、服务和关怀表达，视觉更温和。",
+  },
+  {
+    value: "neo",
+    label: "赛博蓝紫",
+    glyph: "◆",
+    accent: ["#8b5cf6", "#22c55e"],
+    copy: "适合科技感和未来感视觉，强调动态氛围。",
+  },
 ];
 
 const progressTemplate = [
@@ -105,11 +167,18 @@ const primaryActionLabel = computed(() => (activeMode.value === "ppt" ? "生成 
 const selectedCandidateScore = computed(() => selectedCandidate.value?.score ?? 0);
 const selectedCandidateHint = computed(() => selectedCandidate.value?.hint ?? "当前无候选项");
 const previewModeLabel = computed(() => previewTabs.find((item) => item.value === activePreview.value)?.label ?? "对比");
+const canGenerate = computed(() => !loading.value && !demoLoading.value);
+const selectedPageLabel = computed(() => pageOptions.find((item) => item.value === currentPage.value)?.label ?? "首页");
 
 onMounted(() => {
   window.requestAnimationFrame(() => {
     pageReady.value = true;
   });
+  window.addEventListener("hashchange", syncPageFromHash);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("hashchange", syncPageFromHash);
 });
 
 function clamp(value, min, max) {
@@ -191,6 +260,7 @@ const clipScore = computed(() => {
 });
 const clipScoreText = computed(() => clipScore.value.toFixed(2));
 const clipScorePercent = computed(() => Math.round(clipScore.value * 100));
+const clipGaugeStyle = computed(() => ({ "--score": String(clipScorePercent.value) }));
 const clipStatus = computed(() => {
   if (clipScore.value >= 0.85) return "高度匹配";
   if (clipScore.value >= 0.75) return "匹配良好";
@@ -205,6 +275,22 @@ function handleFileChange(event) {
 
 function openFilePicker() {
   fileInput.value?.click();
+}
+
+function syncPageFromHash() {
+  currentPage.value = getPageFromHash();
+}
+
+function navigateTo(page) {
+  if (!validPages.includes(page)) return;
+  currentPage.value = page;
+  if (typeof window !== "undefined") {
+    const nextHash = `#/${page}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 }
 
 function startProgress() {
@@ -342,37 +428,120 @@ function onStyleChange(value) {
 <template>
   <main :class="['app-shell', themeClass, { 'is-ready': pageReady }]">
     <header class="appbar">
-      <div class="brand">
+      <button type="button" class="brand brand-button" @click="navigateTo('home')">
         <div class="brand-mark">SC</div>
         <div>
           <h1>SmartChart Studio</h1>
           <p>Multi-modal illustration workspace</p>
         </div>
-      </div>
+      </button>
 
-      <div class="appbar-meta">
-        <span class="meta-pill">{{ workflowStatus }}</span>
-        <span class="meta-pill">{{ modelLabel }}</span>
-        <span class="meta-pill">{{ styleLabel }}</span>
-        <span class="meta-pill">{{ semanticModeLabel }}</span>
-      </div>
+      <nav class="appnav" aria-label="主导航">
+        <button
+          v-for="item in pageOptions"
+          :key="item.value"
+          type="button"
+          class="nav-btn"
+          :class="{ active: currentPage === item.value }"
+          @click="navigateTo(item.value)"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
 
       <div class="appbar-actions">
         <button type="button" class="ghost-btn" @click="toggleTheme">
           {{ themeMode === "dark" ? "浅色" : "深色" }}
         </button>
         <button
+          v-if="currentPage === 'workspace'"
           type="button"
-          class="primary-btn"
-          :disabled="loading || demoLoading"
-          @click="activeMode === 'ppt' ? submitForm() : runDemo()"
+          class="secondary-btn"
+          @click="navigateTo('report')"
         >
-          {{ primaryActionLabel }}
+          查看结果报告
+        </button>
+        <button v-else type="button" class="primary-btn" @click="navigateTo('workspace')">
+          开始生成
         </button>
       </div>
     </header>
 
-    <section class="workspace">
+    <Transition name="page-fade" mode="out-in">
+      <section v-if="currentPage === 'home'" key="home" class="page home-page">
+        <section class="hero-panel">
+          <div class="hero-copy">
+            <span class="eyebrow">SmartChart Multi-modal Pipeline</span>
+            <h2>把 PPT 图表生成、配图生成和 CLIP 质量判断拆成清晰流程。</h2>
+            <p>
+              首页只保留入口，生成工作台专注上传与预览，质量报告单独承接候选配图、语义匹配度和流程日志。
+            </p>
+            <div class="hero-actions">
+              <button type="button" class="primary-btn" @click="navigateTo('workspace')">进入生成工作台</button>
+              <button type="button" class="secondary-btn" @click="navigateTo('report')">查看质量报告</button>
+            </div>
+          </div>
+          <div class="hero-card">
+            <span class="section-kicker">当前状态</span>
+            <strong>{{ workflowStatus }}</strong>
+            <p>{{ modelLabel }} · {{ styleLabel }} · CLIP {{ clipScoreText }}</p>
+            <div class="hero-meter">
+              <span :style="{ width: `${clipScorePercent}%` }"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="entry-grid">
+          <button type="button" class="entry-card primary-entry" @click="navigateTo('workspace')">
+            <span>01</span>
+            <h3>生成工作台</h3>
+            <p>上传 PPT、选择页码、切换模型和风格，保持核心操作区更干净。</p>
+          </button>
+          <button type="button" class="entry-card" @click="navigateTo('report')">
+            <span>02</span>
+            <h3>质量报告</h3>
+            <p>查看 CLIP 分数、候选配图、流程轨迹和后端日志，不挤占生成页面。</p>
+          </button>
+          <button type="button" class="entry-card" @click="navigateTo('docs')">
+            <span>03</span>
+            <h3>使用说明</h3>
+            <p>沉淀前端操作说明、风格控制说明和最终展示口径。</p>
+          </button>
+        </section>
+
+        <section class="overview-strip">
+          <article>
+            <span>目标质量</span>
+            <strong>CLIP ≥ 0.78</strong>
+            <p>用于最终配图质量测试报告。</p>
+          </article>
+          <article>
+            <span>模型能力</span>
+            <strong>Flux / 通义万相</strong>
+            <p>支持双模型切换与重新生成。</p>
+          </article>
+          <article>
+            <span>风格控制</span>
+            <strong>ControlNet</strong>
+            <p>用强度滑杆控制配图风格约束。</p>
+          </article>
+        </section>
+      </section>
+
+      <section v-else-if="currentPage === 'workspace'" key="workspace" class="page workspace-page">
+        <div class="page-toolbar">
+          <button type="button" class="back-btn" @click="navigateTo('home')">返回首页</button>
+          <div>
+            <span class="section-kicker">{{ selectedPageLabel }}</span>
+            <h2>生成工作台</h2>
+            <p>这里只保留上传、参数和预览；候选图、日志和报告放到二级页面里。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="secondary-btn" @click="navigateTo('report')">查看结果报告</button>
+          </div>
+        </div>
+
+        <section class="workspace compact-workspace">
       <aside class="rail">
         <div class="rail-block">
           <div class="section-head">
@@ -731,26 +900,231 @@ function onStyleChange(value) {
           <a v-if="downloadUrl" :href="downloadUrl" class="download-link">下载增强版 PPT</a>
         </div>
       </aside>
-    </section>
+        </section>
+      </section>
+
+      <section v-else-if="currentPage === 'report'" key="report" class="page report-page">
+        <div class="page-toolbar">
+          <button type="button" class="back-btn" @click="navigateTo('workspace')">返回工作台</button>
+          <div>
+            <span class="section-kicker">{{ selectedPageLabel }}</span>
+            <h2>质量报告</h2>
+            <p>把结果摘要、候选配图、CLIP 分数和流程日志放在独立页面，阅读压力会小很多。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="secondary-btn" @click="navigateTo('docs')">查看说明文档</button>
+          </div>
+        </div>
+
+        <section class="report-grid">
+          <article class="report-card">
+            <div class="section-head">
+              <div>
+                <h2>结果摘要</h2>
+                <p>配置、匹配度和当前候选项。</p>
+              </div>
+              <span class="section-kicker">{{ workflowStatus }}</span>
+            </div>
+
+            <div class="summary-list">
+              <div class="summary-item">
+                <span>模型</span>
+                <strong>{{ modelLabel }}</strong>
+              </div>
+              <div class="summary-item">
+                <span>风格</span>
+                <strong>{{ styleLabel }}</strong>
+              </div>
+              <div class="summary-item">
+                <span>ControlNet</span>
+                <strong>{{ controlNetEnabled ? "开启" : "关闭" }}</strong>
+              </div>
+              <div class="summary-item">
+                <span>CLIP 评分</span>
+                <strong>{{ clipScoreText }}</strong>
+              </div>
+            </div>
+
+            <div v-if="fileInfo" class="file-card">
+              <p><span>文件名</span><strong>{{ fileInfo.name }}</strong></p>
+              <p><span>文件大小</span><strong>{{ fileInfo.size }}</strong></p>
+              <p><span>修改时间</span><strong>{{ fileInfo.lastModified }}</strong></p>
+              <p><span>目标页码</span><strong>{{ slideNumber }}</strong></p>
+            </div>
+
+            <div class="gauge-card" :style="clipGaugeStyle">
+              <div class="gauge-ring">
+                <div class="gauge-core">
+                  <span>语义匹配度</span>
+                  <strong>{{ clipScoreText }}</strong>
+                  <p>{{ clipStatus }}</p>
+                </div>
+              </div>
+              <div class="gauge-caption">
+                <span>当前结果</span>
+                <strong>{{ clipStatus }}</strong>
+              </div>
+            </div>
+          </article>
+
+          <article class="report-card">
+            <div class="section-head">
+              <div>
+                <h2>候选配图</h2>
+                <p>用于对比预览和重新生成判断。</p>
+              </div>
+              <span class="section-kicker">RANK</span>
+            </div>
+
+            <div class="candidate-list">
+              <button
+                v-for="(item, index) in candidatePool"
+                :key="item.id"
+                type="button"
+                class="candidate-row"
+                :class="{ active: selectedCandidateIndex === index }"
+                @click="selectCandidate(index)"
+              >
+                <div class="candidate-swatch" :style="{ background: `linear-gradient(135deg, ${item.tones[0]}, ${item.tones[1]})` }"></div>
+                <div class="candidate-copy">
+                  <div class="candidate-title">
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.score.toFixed(2) }}</span>
+                  </div>
+                  <p>{{ item.subtitle }}</p>
+                  <div class="candidate-bar">
+                    <span :style="{ width: `${Math.round(item.score * 100)}%` }"></span>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <div v-if="selectedCandidate" class="candidate-detail">
+              <div class="candidate-detail-head">
+                <strong>{{ selectedCandidate.title }}</strong>
+                <span>Rank {{ selectedCandidate.rank }}</span>
+              </div>
+              <p>{{ selectedCandidate.subtitle }}</p>
+              <div class="candidate-detail-meta">
+                <span>{{ selectedCandidateHint }}</span>
+                <strong>{{ selectedCandidateScore.toFixed(2) }}</strong>
+              </div>
+            </div>
+          </article>
+
+          <article class="report-card wide-card">
+            <div class="section-head">
+              <div>
+                <h2>流程轨迹</h2>
+                <p>语义判断、生成步骤与输出日志。</p>
+              </div>
+              <span class="section-kicker">TRACE</span>
+            </div>
+
+            <div v-if="intentInfo" class="intent-card">
+              <p><span>推荐图表</span><strong>{{ intentInfo.chart_type }}</strong></p>
+              <p><span>语义来源</span><strong>{{ intentInfo.source || "heuristic" }}</strong></p>
+              <p><span>判断依据</span><strong>{{ intentInfo.reason || intentInfo.summary }}</strong></p>
+              <p><span>配图主题</span><strong>{{ intentInfo.visual_theme || "未提供" }}</strong></p>
+            </div>
+
+            <div class="stage-list">
+              <div v-for="item in stageCards" :key="item.stage + item.status" class="stage-item">
+                <span>{{ item.label }}</span>
+                <strong :class="`stage-${item.status}`">{{ item.status }}</strong>
+              </div>
+            </div>
+
+            <div v-if="recentLogs.length" class="log-list">
+              <p v-for="log in recentLogs" :key="log">{{ log }}</p>
+            </div>
+            <pre v-else-if="response">{{ JSON.stringify(response, null, 2) }}</pre>
+            <p v-else class="placeholder">处理完成后，这里会展示后端返回结构化结果和阶段日志。</p>
+
+            <a v-if="downloadUrl" :href="downloadUrl" class="download-link">下载增强版 PPT</a>
+          </article>
+        </section>
+      </section>
+
+      <section v-else key="docs" class="page docs-page">
+        <div class="page-toolbar">
+          <button type="button" class="back-btn" @click="navigateTo('home')">返回首页</button>
+          <div>
+            <span class="section-kicker">{{ selectedPageLabel }}</span>
+            <h2>前端使用说明与风格控制文档</h2>
+            <p>这里可以作为你后续提交“前端使用说明 + 风格控制文档”的雏形。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="secondary-btn" @click="navigateTo('workspace')">去工作台</button>
+          </div>
+        </div>
+
+        <section class="docs-grid">
+          <article class="doc-card">
+            <h3>推荐操作流程</h3>
+            <ol class="step-list">
+              <li>进入生成工作台，选择 PPT 模式或文本演示。</li>
+              <li>上传 PPTX 文件并填写目标页码。</li>
+              <li>选择语义分析模式、配图模型和风格标签。</li>
+              <li>调整 ControlNet 强度后点击生成。</li>
+              <li>进入质量报告页查看 CLIP 分数、候选配图和流程日志。</li>
+            </ol>
+          </article>
+
+          <article class="doc-card">
+            <h3>风格控制说明</h3>
+            <div class="style-doc-grid">
+              <div v-for="item in styleGuideCards" :key="item.value" class="style-doc-item">
+                <span class="style-icon" :style="{ background: `linear-gradient(135deg, ${item.accent[0]}, ${item.accent[1]})` }">
+                  {{ item.glyph }}
+                </span>
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <span>{{ item.copy }}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="doc-card">
+            <h3>质量报告口径</h3>
+            <p>
+              当前页面展示的是前端侧的质量报告结构：CLIP 分数、平均目标、候选图排名、流程日志和下载入口。
+              后续如果后端补充真实 CLIP 批量结果，可以直接映射到这里。
+            </p>
+            <div class="quality-target">
+              <span>最终目标</span>
+              <strong>CLIP 平均 ≥ 0.78</strong>
+            </div>
+          </article>
+        </section>
+      </section>
+    </Transition>
   </main>
 </template>
 
 <style scoped>
 .app-shell {
   --bg: #f6f8fb;
-  --surface: rgba(255, 255, 255, 0.88);
+  --surface: rgba(255, 255, 255, 0.9);
   --surface-strong: #ffffff;
-  --surface-soft: rgba(255, 255, 255, 0.7);
+  --surface-soft: rgba(255, 255, 255, 0.76);
   --text: #0f172a;
-  --muted: #64748b;
-  --border: rgba(15, 23, 42, 0.08);
+  --muted: #5f6c86;
+  --border: rgba(15, 23, 42, 0.06);
   --accent: #1a73e8;
   --accent-strong: #0f5de7;
-  --accent-weak: rgba(26, 115, 232, 0.12);
-  --shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+  --accent-weak: rgba(26, 115, 232, 0.1);
+  --accent-ghost: rgba(94, 92, 230, 0.08);
+  --shadow: 0 24px 58px rgba(15, 23, 42, 0.06);
+  position: relative;
+  isolation: isolate;
   min-height: 100vh;
   color: var(--text);
-  background: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
+  background:
+    radial-gradient(circle at 10% 8%, rgba(16, 185, 129, 0.12), transparent 28%),
+    radial-gradient(circle at 92% 0%, rgba(26, 115, 232, 0.12), transparent 24%),
+    linear-gradient(180deg, #f8fbff 0%, #eef3f8 100%);
 }
 
 .app-shell.theme-dark {
@@ -759,13 +1133,17 @@ function onStyleChange(value) {
   --surface-strong: #111827;
   --surface-soft: rgba(15, 23, 42, 0.64);
   --text: #e5eefb;
-  --muted: #9aa7b7;
-  --border: rgba(148, 163, 184, 0.16);
+  --muted: #a1aec0;
+  --border: rgba(148, 163, 184, 0.14);
   --accent: #6ea8fe;
   --accent-strong: #4d8df7;
   --accent-weak: rgba(110, 168, 254, 0.14);
-  --shadow: 0 18px 44px rgba(2, 6, 23, 0.42);
-  background: linear-gradient(180deg, #0b1220 0%, #111827 100%);
+  --accent-ghost: rgba(110, 168, 254, 0.08);
+  --shadow: 0 28px 64px rgba(2, 6, 23, 0.34);
+  background:
+    radial-gradient(circle at 10% 10%, rgba(16, 185, 129, 0.08), transparent 28%),
+    radial-gradient(circle at 92% 0%, rgba(110, 168, 254, 0.08), transparent 24%),
+    linear-gradient(180deg, #0b1220 0%, #111827 100%);
 }
 
 .appbar {
@@ -786,6 +1164,15 @@ function onStyleChange(value) {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.brand-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .brand-mark {
@@ -810,6 +1197,40 @@ function onStyleChange(value) {
   margin: 3px 0 0;
   font-size: 12px;
   color: var(--muted);
+}
+
+.appnav {
+  display: inline-flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px;
+  justify-self: center;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.nav-btn {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.nav-btn:hover,
+.nav-btn.active {
+  color: var(--text);
+  background: var(--surface-strong);
+}
+
+.nav-btn.active {
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
 .appbar-meta {
@@ -933,6 +1354,399 @@ function onStyleChange(value) {
   box-shadow: none;
 }
 
+.page {
+  position: relative;
+  z-index: 1;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 28px 20px 36px;
+}
+
+.home-page {
+  display: grid;
+  gap: 18px;
+}
+
+.hero-panel,
+.entry-card,
+.overview-strip article,
+.page-toolbar,
+.report-card,
+.doc-card {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
+}
+
+.hero-panel {
+  min-height: 360px;
+  padding: 36px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr);
+  gap: 24px;
+  align-items: end;
+  overflow: hidden;
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(26, 115, 232, 0.16), transparent 34%),
+    radial-gradient(circle at 86% 24%, rgba(16, 185, 129, 0.14), transparent 30%),
+    var(--surface);
+}
+
+.hero-panel::before,
+.hero-panel::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.hero-panel::before {
+  right: 48px;
+  top: 32px;
+  width: 200px;
+  height: 200px;
+  border-radius: 36px;
+  border: 1px solid rgba(26, 115, 232, 0.14);
+  background:
+    linear-gradient(135deg, rgba(26, 115, 232, 0.12), rgba(16, 185, 129, 0.08)),
+    radial-gradient(circle at 28% 28%, rgba(255, 255, 255, 0.45), transparent 30%);
+  transform: rotate(14deg);
+  filter: blur(0.2px);
+  opacity: 0.9;
+}
+
+.hero-panel::after {
+  right: 16px;
+  bottom: 28px;
+  width: 280px;
+  height: 170px;
+  border-radius: 999px;
+  border: 1px solid rgba(26, 115, 232, 0.12);
+  background:
+    linear-gradient(90deg, rgba(26, 115, 232, 0.08), rgba(16, 185, 129, 0.06)),
+    radial-gradient(circle, rgba(255, 255, 255, 0.45), transparent 58%);
+  transform: skewX(-8deg);
+  opacity: 0.75;
+}
+
+.hero-copy {
+  max-width: 760px;
+  position: relative;
+  z-index: 1;
+}
+
+.eyebrow {
+  display: inline-flex;
+  margin-bottom: 14px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero-copy h2,
+.page-toolbar h2 {
+  margin: 0;
+  color: var(--text);
+}
+
+.hero-copy h2 {
+  font-size: clamp(32px, 5vw, 56px);
+  line-height: 1.05;
+  letter-spacing: -0.05em;
+}
+
+.hero-copy p,
+.page-toolbar p,
+.entry-card p,
+.overview-strip p,
+.doc-card p {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.hero-copy p {
+  max-width: 620px;
+  margin: 18px 0 0;
+  font-size: 16px;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.hero-card {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  position: relative;
+  z-index: 1;
+}
+
+.hero-card strong {
+  display: block;
+  margin-top: 18px;
+  font-size: 34px;
+  letter-spacing: -0.04em;
+}
+
+.hero-card p {
+  margin: 8px 0 18px;
+  color: var(--muted);
+}
+
+.hero-meter {
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--accent-weak);
+}
+
+.hero-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #10b981, var(--accent));
+}
+
+.entry-grid,
+.overview-strip,
+.report-grid,
+.docs-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.entry-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.entry-card {
+  min-height: 210px;
+  padding: 22px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.entry-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.entry-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(26, 115, 232, 0.28);
+  box-shadow: 0 20px 46px rgba(15, 23, 42, 0.1);
+}
+
+.entry-card span {
+  display: inline-flex;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.entry-card::after {
+  position: absolute;
+  right: 18px;
+  top: 10px;
+  z-index: 0;
+  color: var(--accent);
+  font-size: 66px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.08em;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.entry-card:nth-child(1)::after {
+  content: "01";
+}
+
+.entry-card:nth-child(2)::after {
+  content: "02";
+}
+
+.entry-card:nth-child(3)::after {
+  content: "03";
+}
+
+.entry-card h3,
+.doc-card h3 {
+  margin: 18px 0 8px;
+  font-size: 20px;
+}
+
+.primary-entry {
+  background:
+    linear-gradient(135deg, rgba(26, 115, 232, 0.12), transparent),
+    var(--surface);
+}
+
+.overview-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.overview-strip article,
+.report-card,
+.doc-card {
+  padding: 22px;
+}
+
+.overview-strip span,
+.quality-target span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.overview-strip strong,
+.quality-target strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 20px;
+}
+
+.page-toolbar {
+  margin-bottom: 16px;
+  padding: 18px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.page-toolbar h2 {
+  margin-top: 8px;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.page-toolbar p {
+  margin: 6px 0 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.back-btn,
+.text-action {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.back-btn {
+  padding: 10px 14px;
+}
+
+.back-btn::before {
+  content: "←";
+  margin-right: 6px;
+}
+
+.text-action {
+  padding: 8px 12px;
+  color: var(--accent);
+}
+
+.report-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.report-card {
+  min-width: 0;
+}
+
+.wide-card {
+  grid-column: 1 / -1;
+}
+
+.docs-grid {
+  grid-template-columns: minmax(240px, 3fr) minmax(0, 6fr) minmax(240px, 3fr);
+}
+
+.step-list {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.style-doc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.style-doc-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft)),
+    var(--surface-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.style-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.12);
+}
+
+.style-doc-item strong,
+.style-doc-item span {
+  display: block;
+}
+
+.style-doc-item span {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.quality-target {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 16px;
+  background: var(--accent-weak);
+}
+
 .workspace {
   max-width: 1600px;
   margin: 0 auto;
@@ -941,6 +1755,16 @@ function onStyleChange(value) {
   grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) minmax(300px, 360px);
   gap: 16px;
   align-items: start;
+}
+
+.compact-workspace {
+  max-width: 1320px;
+  padding: 0;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1.35fr);
+}
+
+.compact-workspace > .rail:last-child {
+  display: none;
 }
 
 .rail,
@@ -968,9 +1792,17 @@ function onStyleChange(value) {
 }
 
 .rail-block + .rail-block {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  margin-top: 12px;
+}
+
+.rail-block {
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.06)),
+    var(--surface-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .section-head {
@@ -1110,8 +1942,13 @@ function onStyleChange(value) {
 .tab-switch,
 .button-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
+}
+
+.chip-group.wrap {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .mode-switch {
@@ -1161,6 +1998,7 @@ function onStyleChange(value) {
   color: var(--text);
   font-size: 13px;
   line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .chip-btn.active {
@@ -1242,22 +2080,26 @@ function onStyleChange(value) {
 .summary-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .summary-item,
 .file-card,
-.clip-meter,
+.gauge-card,
 .candidate-detail,
 .intent-card,
 .compare-panel {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--surface-soft);
 }
 
 .summary-item {
-  padding: 10px 12px;
+  min-height: 84px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .summary-item strong,
@@ -1270,9 +2112,13 @@ function onStyleChange(value) {
   font-weight: 600;
 }
 
+.summary-item strong {
+  font-size: 18px;
+}
+
 .file-card {
   margin-top: 12px;
-  padding: 12px;
+  padding: 16px;
 }
 
 .file-card p,
@@ -1287,11 +2133,80 @@ function onStyleChange(value) {
 
 .clip-meter {
   margin-top: 12px;
-  padding: 12px;
 }
 
-.clip-meter strong {
-  font-size: 18px;
+.gauge-card {
+  margin-top: 12px;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(26, 115, 232, 0.08), transparent 52%),
+    var(--surface-soft);
+}
+
+.gauge-ring {
+  width: min(100%, 210px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  padding: 12px;
+  background:
+    conic-gradient(
+      from 220deg,
+      #10b981 0%,
+      #10b981 calc(var(--score) * 1%),
+      rgba(191, 211, 239, 0.7) calc(var(--score) * 1%),
+      rgba(191, 211, 239, 0.7) 100%
+    );
+  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.08);
+}
+
+.gauge-core {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  background:
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft)),
+    var(--surface-strong);
+}
+
+.gauge-core span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gauge-core strong {
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 40px;
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.gauge-core p {
+  margin: 8px 0 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gauge-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gauge-caption strong {
+  color: var(--text);
 }
 
 .clip-note {
@@ -1301,7 +2216,7 @@ function onStyleChange(value) {
 
 .candidate-list {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin-top: 12px;
 }
 
@@ -1310,10 +2225,10 @@ function onStyleChange(value) {
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 12px;
   width: 100%;
-  padding: 10px;
+  padding: 12px;
   text-align: left;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--surface-soft);
   cursor: pointer;
 }
@@ -1325,7 +2240,7 @@ function onStyleChange(value) {
 
 .candidate-swatch {
   min-height: 64px;
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 .candidate-copy {
@@ -1366,7 +2281,7 @@ function onStyleChange(value) {
 
 .candidate-detail {
   margin-top: 12px;
-  padding: 12px;
+  padding: 16px;
 }
 
 .candidate-detail-head,
@@ -1401,8 +2316,10 @@ function onStyleChange(value) {
 .canvas-shell {
   flex: 1;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface-soft);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top, rgba(26, 115, 232, 0.05), transparent 54%),
+    var(--surface-soft);
   padding: 14px;
 }
 
@@ -1412,10 +2329,12 @@ function onStyleChange(value) {
 .compare-panel .empty-state.small {
   width: 100%;
   aspect-ratio: 16 / 10;
-  border-radius: 12px;
+  border-radius: 16px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  background: var(--surface-strong);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background:
+    linear-gradient(180deg, var(--surface-strong), rgba(255, 255, 255, 0.8)),
+    var(--surface-strong);
 }
 
 .preview-frame img {
@@ -1429,11 +2348,50 @@ function onStyleChange(value) {
   display: grid;
   place-items: center;
   text-align: center;
-  padding: 20px;
+  padding: 22px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-style: dashed;
+}
+
+.empty-state::before,
+.empty-state::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: auto;
+  pointer-events: none;
+}
+
+.empty-state::before {
+  left: 50%;
+  top: 44%;
+  transform: translate(-50%, -50%);
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  border: 1px solid rgba(26, 115, 232, 0.12);
+  background: radial-gradient(circle, rgba(26, 115, 232, 0.08), transparent 68%);
+  animation: floatPulse 4.8s ease-in-out infinite;
+}
+
+.empty-state::after {
+  left: 50%;
+  top: 54%;
+  transform: translate(-50%, -50%);
+  width: 250px;
+  height: 120px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(26, 115, 232, 0.08), rgba(16, 185, 129, 0.08));
+  filter: blur(10px);
+  animation: glowSlide 5.5s ease-in-out infinite;
 }
 
 .empty-bars,
 .empty-illustration {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: end;
   justify-content: center;
@@ -1445,6 +2403,7 @@ function onStyleChange(value) {
   width: 28px;
   border-radius: 10px 10px 4px 4px;
   background: linear-gradient(180deg, var(--accent), #10b981);
+  box-shadow: 0 10px 18px rgba(26, 115, 232, 0.12);
 }
 
 .empty-bars span:nth-child(1) {
@@ -1468,6 +2427,7 @@ function onStyleChange(value) {
   height: 86px;
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(26, 115, 232, 0.9), rgba(16, 185, 129, 0.82));
+  box-shadow: 0 10px 20px rgba(26, 115, 232, 0.14);
 }
 
 .empty-illustration span:nth-child(2) {
@@ -1482,6 +2442,8 @@ function onStyleChange(value) {
   margin: 14px 0 0;
   color: var(--muted);
   font-size: 13px;
+  position: relative;
+  z-index: 1;
 }
 
 .compare-grid {
@@ -1491,7 +2453,7 @@ function onStyleChange(value) {
 }
 
 .compare-panel {
-  padding: 12px;
+  padding: 14px;
 }
 
 .compare-head {
@@ -1518,7 +2480,7 @@ function onStyleChange(value) {
 }
 
 .intent-card {
-  padding: 12px;
+  padding: 16px;
   margin-bottom: 12px;
 }
 
@@ -1549,9 +2511,9 @@ function onStyleChange(value) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--surface-soft);
   font-size: 12px;
 }
@@ -1617,6 +2579,23 @@ pre {
   margin: 0;
 }
 
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 260ms ease, transform 260ms ease;
+}
+
+.page-fade-enter-from,
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.page-fade-enter-to,
+.page-fade-leave-from {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 @media (max-width: 1320px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -1630,6 +2609,10 @@ pre {
   .stage {
     min-height: auto;
   }
+
+  .compact-workspace {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 840px) {
@@ -1640,6 +2623,12 @@ pre {
 
   .appbar-meta {
     justify-content: flex-start;
+  }
+
+  .appnav {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
   }
 
   .appbar-actions {
@@ -1655,11 +2644,55 @@ pre {
   .compare-grid {
     grid-template-columns: 1fr;
   }
+
+  .hero-panel,
+  .entry-grid,
+  .overview-strip,
+  .page-toolbar,
+  .report-grid,
+  .docs-grid,
+  .style-doc-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-toolbar {
+    align-items: stretch;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .chip-group.wrap {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
+  .page {
+    padding: 14px 12px 26px;
+  }
+
+  .hero-panel,
+  .entry-card,
+  .overview-strip article,
+  .page-toolbar,
+  .report-card,
+  .doc-card {
+    border-radius: 14px;
+  }
+
+  .hero-panel {
+    min-height: auto;
+    padding: 22px;
+  }
+
   .workspace {
     padding: 12px;
+  }
+
+  .compact-workspace {
+    padding: 0;
   }
 
   .rail,
@@ -1675,6 +2708,10 @@ pre {
   .appbar-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .chip-group.wrap {
+    grid-template-columns: 1fr;
   }
 
   .candidate-row {
@@ -1698,21 +2735,49 @@ pre {
   content: "";
   position: fixed;
   inset: 0;
+  z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(26, 115, 232, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26, 115, 232, 0.05) 1px, transparent 1px);
-  background-size: 36px 36px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 82%);
-  opacity: 0.35;
-  animation: gridDrift 32s linear infinite;
+    linear-gradient(rgba(26, 115, 232, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26, 115, 232, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.58), transparent 82%);
+  opacity: 0.28;
+  animation: gridDrift 36s linear infinite;
+}
+
+.app-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(26, 115, 232, 0.08), transparent 18%),
+    radial-gradient(circle at 84% 16%, rgba(16, 185, 129, 0.08), transparent 16%),
+    radial-gradient(circle at 76% 82%, rgba(139, 92, 246, 0.06), transparent 18%);
+  filter: blur(16px);
+  opacity: 0.75;
+}
+
+.app-shell.theme-dark::after {
+  opacity: 0.42;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(110, 168, 254, 0.08), transparent 18%),
+    radial-gradient(circle at 84% 16%, rgba(16, 185, 129, 0.06), transparent 16%),
+    radial-gradient(circle at 76% 82%, rgba(139, 92, 246, 0.05), transparent 18%);
 }
 
 .app-shell.theme-dark::before {
-  opacity: 0.2;
+  opacity: 0.18;
   background-image:
     linear-gradient(rgba(110, 168, 254, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(110, 168, 254, 0.08) 1px, transparent 1px);
+}
+
+.app-shell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .app-shell.is-ready .appbar {
@@ -1886,7 +2951,7 @@ pre {
 .compare-panel:hover .preview-frame,
 .compare-panel:hover .empty-state {
   transform: translateY(-2px);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
 }
 
 .empty-bars span {
@@ -2068,6 +3133,30 @@ pre {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes floatPulse {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0.56;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.04);
+    opacity: 0.92;
+  }
+}
+
+@keyframes glowSlide {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) translateX(-12px) scale(0.98);
+    opacity: 0.42;
+  }
+  50% {
+    transform: translate(-50%, -50%) translateX(12px) scale(1.02);
+    opacity: 0.72;
   }
 }
 </style>
