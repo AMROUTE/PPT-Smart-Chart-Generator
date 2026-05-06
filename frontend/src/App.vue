@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 const file = ref(null);
 const slideNumber = ref(1);
@@ -41,6 +41,29 @@ function getPageFromHash() {
 }
 
 const currentPage = ref(getPageFromHash());
+const heroHeadlineRef = ref(null);
+const heroHeadlineVisible = ref(false);
+const spotlightSelector = [
+  ".hero-panel",
+  ".entry-card",
+  ".overview-strip article",
+  ".page-toolbar",
+  ".report-card",
+  ".doc-card",
+  ".rail",
+  ".stage",
+  ".rail-block",
+  ".summary-item",
+  ".candidate-row",
+  ".compare-panel",
+  ".file-card",
+  ".intent-card",
+  ".gauge-card",
+  ".stage-item",
+].join(",");
+
+let metricObserver = null;
+let heroObserver = null;
 
 const modelOptions = [
   { value: "flux", label: "Flux" },
@@ -100,6 +123,20 @@ const styleGuideCards = [
     copy: "适合科技感和未来感视觉，强调动态氛围。",
   },
 ];
+
+const heroHeadlineWords = [
+  "把",
+  "PPT",
+  "图表生成、",
+  "配图生成",
+  "和",
+  "CLIP",
+  "质量判断",
+  "拆成",
+  "清晰流程。",
+];
+
+const heroHeadlineText = heroHeadlineWords.join("");
 
 const progressTemplate = [
   { stage: "parse_ppt", label: "解析内容" },
@@ -174,11 +211,16 @@ onMounted(() => {
   window.requestAnimationFrame(() => {
     pageReady.value = true;
   });
+  void refreshVisualObservers();
   window.addEventListener("hashchange", syncPageFromHash);
+  window.addEventListener("pointermove", updateSpotlight);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("hashchange", syncPageFromHash);
+  window.removeEventListener("pointermove", updateSpotlight);
+  metricObserver?.disconnect();
+  heroObserver?.disconnect();
 });
 
 function clamp(value, min, max) {
@@ -279,6 +321,7 @@ function openFilePicker() {
 
 function syncPageFromHash() {
   currentPage.value = getPageFromHash();
+  void refreshVisualObservers();
 }
 
 function navigateTo(page) {
@@ -290,7 +333,63 @@ function navigateTo(page) {
       window.location.hash = nextHash;
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
+    void refreshVisualObservers();
   }
+}
+
+function updateSpotlight(event) {
+  const card = event.target.closest?.(spotlightSelector);
+  if (!card) return;
+  const rect = card.getBoundingClientRect();
+  card.style.setProperty("--spotlight-x", `${event.clientX - rect.left}px`);
+  card.style.setProperty("--spotlight-y", `${event.clientY - rect.top}px`);
+}
+
+function setupMetricObserver() {
+  metricObserver?.disconnect();
+  if (typeof window === "undefined" || !("IntersectionObserver" in window)) return;
+  metricObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          metricObserver.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.28 },
+  );
+  document.querySelectorAll("[data-animate-metric]").forEach((item) => metricObserver.observe(item));
+}
+
+function setupHeroObserver() {
+  heroObserver?.disconnect();
+  heroHeadlineVisible.value = false;
+  if (currentPage.value !== "home") return;
+  if (typeof window === "undefined" || !("IntersectionObserver" in window) || !heroHeadlineRef.value) {
+    heroHeadlineVisible.value = true;
+    return;
+  }
+  heroObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          heroHeadlineVisible.value = true;
+          heroObserver.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.1 },
+  );
+  heroObserver.observe(heroHeadlineRef.value);
+}
+
+async function refreshVisualObservers() {
+  await nextTick();
+  window.requestAnimationFrame(() => {
+    setupMetricObserver();
+    setupHeroObserver();
+  });
 }
 
 function startProgress() {
@@ -333,6 +432,7 @@ function finalizeProgress(pipeline) {
       status: item.status,
       details: item.details,
     })) ?? progressTemplate.map((item) => ({ ...item, status: "completed" }));
+  void refreshVisualObservers();
 }
 
 async function submitForm() {
@@ -469,13 +569,24 @@ function onStyleChange(value) {
 
     <Transition name="page-fade" mode="out-in">
       <section v-if="currentPage === 'home'" key="home" class="page home-page">
-        <section class="hero-panel">
-          <div class="hero-copy">
-            <span class="eyebrow">SmartChart Multi-modal Pipeline</span>
-            <h2>把 PPT 图表生成、配图生成和 CLIP 质量判断拆成清晰流程。</h2>
-            <p>
-              首页只保留入口，生成工作台专注上传与预览，质量报告单独承接候选配图、语义匹配度和流程日志。
-            </p>
+          <section class="hero-panel">
+            <div class="hero-copy">
+              <span class="eyebrow">SmartChart Multi-modal Pipeline</span>
+              <h2 ref="heroHeadlineRef" class="hero-headline" :aria-label="heroHeadlineText">
+                <span
+                  v-for="(word, index) in heroHeadlineWords"
+                  :key="`${word}-${index}`"
+                  class="blur-word"
+                  :class="{ visible: heroHeadlineVisible }"
+                  :style="{ '--word-delay': `${index * 100}ms` }"
+                  aria-hidden="true"
+                >
+                  {{ word }}
+                </span>
+              </h2>
+              <p>
+                首页只保留入口，生成工作台专注上传与预览，质量报告单独承接候选配图、语义匹配度和流程日志。
+              </p>
             <div class="hero-actions">
               <button type="button" class="primary-btn" @click="navigateTo('workspace')">进入生成工作台</button>
               <button type="button" class="secondary-btn" @click="navigateTo('report')">查看质量报告</button>
@@ -486,7 +597,7 @@ function onStyleChange(value) {
             <strong>{{ workflowStatus }}</strong>
             <p>{{ modelLabel }} · {{ styleLabel }} · CLIP {{ clipScoreText }}</p>
             <div class="hero-meter">
-              <span :style="{ width: `${clipScorePercent}%` }"></span>
+              <span data-animate-metric class="metric-bar" :style="{ width: `${clipScorePercent}%` }"></span>
             </div>
           </div>
         </section>
@@ -623,7 +734,11 @@ function onStyleChange(value) {
               <strong>{{ progressValue }}%</strong>
             </div>
             <div class="progress-track">
-              <div class="progress-fill" :style="{ width: `${progressValue}%` }"></div>
+              <div
+                data-animate-metric
+                class="progress-fill metric-bar"
+                :style="{ width: `${progressValue}%` }"
+              ></div>
             </div>
           </div>
 
@@ -953,7 +1068,7 @@ function onStyleChange(value) {
             </div>
 
             <div class="gauge-card" :style="clipGaugeStyle">
-              <div class="gauge-ring">
+              <div data-animate-metric class="gauge-ring metric-ring">
                 <div class="gauge-core">
                   <span>语义匹配度</span>
                   <strong>{{ clipScoreText }}</strong>
@@ -993,7 +1108,11 @@ function onStyleChange(value) {
                   </div>
                   <p>{{ item.subtitle }}</p>
                   <div class="candidate-bar">
-                    <span :style="{ width: `${Math.round(item.score * 100)}%` }"></span>
+                    <span
+                      data-animate-metric
+                      class="metric-bar"
+                      :style="{ width: `${Math.round(item.score * 100)}%` }"
+                    ></span>
                   </div>
                 </div>
               </button>
@@ -1106,9 +1225,9 @@ function onStyleChange(value) {
 <style scoped>
 .app-shell {
   --bg: #f6f8fb;
-  --surface: rgba(255, 255, 255, 0.9);
+  --surface: rgba(255, 255, 255, 0.82);
   --surface-strong: #ffffff;
-  --surface-soft: rgba(255, 255, 255, 0.76);
+  --surface-soft: rgba(255, 255, 255, 0.68);
   --text: #0f172a;
   --muted: #5f6c86;
   --border: rgba(15, 23, 42, 0.06);
@@ -1122,16 +1241,16 @@ function onStyleChange(value) {
   min-height: 100vh;
   color: var(--text);
   background:
-    radial-gradient(circle at 10% 8%, rgba(16, 185, 129, 0.12), transparent 28%),
-    radial-gradient(circle at 92% 0%, rgba(26, 115, 232, 0.12), transparent 24%),
+    radial-gradient(circle at 10% 8%, rgba(16, 185, 129, 0.14), transparent 28%),
+    radial-gradient(circle at 92% 0%, rgba(26, 115, 232, 0.14), transparent 24%),
     linear-gradient(180deg, #f8fbff 0%, #eef3f8 100%);
 }
 
 .app-shell.theme-dark {
   --bg: #0b1220;
-  --surface: rgba(15, 23, 42, 0.84);
+  --surface: rgba(15, 23, 42, 0.76);
   --surface-strong: #111827;
-  --surface-soft: rgba(15, 23, 42, 0.64);
+  --surface-soft: rgba(15, 23, 42, 0.56);
   --text: #e5eefb;
   --muted: #a1aec0;
   --border: rgba(148, 163, 184, 0.14);
@@ -1139,7 +1258,7 @@ function onStyleChange(value) {
   --accent-strong: #4d8df7;
   --accent-weak: rgba(110, 168, 254, 0.14);
   --accent-ghost: rgba(110, 168, 254, 0.08);
-  --shadow: 0 28px 64px rgba(2, 6, 23, 0.34);
+  --shadow: 0 30px 70px rgba(2, 6, 23, 0.3);
   background:
     radial-gradient(circle at 10% 10%, rgba(16, 185, 129, 0.08), transparent 28%),
     radial-gradient(circle at 92% 0%, rgba(110, 168, 254, 0.08), transparent 24%),
@@ -1157,7 +1276,7 @@ function onStyleChange(value) {
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(16px);
 }
 
 .brand {
@@ -1377,7 +1496,64 @@ function onStyleChange(value) {
   border-radius: 20px;
   background: var(--surface);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.hero-card,
+.entry-card,
+.overview-strip article,
+.page-toolbar,
+.report-card,
+.doc-card,
+.stage,
+.rail-block,
+.summary-item,
+.candidate-row,
+.compare-panel,
+.file-card,
+.intent-card,
+.gauge-card,
+.stage-item {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.hero-card::before,
+.entry-card::before,
+.overview-strip article::before,
+.page-toolbar::before,
+.report-card::before,
+.doc-card::before,
+.stage::before,
+.rail-block::before,
+.summary-item::before,
+.candidate-row::before,
+.compare-panel::before,
+.file-card::before,
+.intent-card::before,
+.gauge-card::before,
+.stage-item::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.2px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.48) 0%,
+    rgba(255, 255, 255, 0.16) 18%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0) 60%,
+    rgba(125, 211, 252, 0.18) 82%,
+    rgba(255, 255, 255, 0.44) 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.78;
 }
 
 .hero-panel {
@@ -1391,6 +1567,7 @@ function onStyleChange(value) {
   position: relative;
   isolation: isolate;
   background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.18), transparent 42%),
     radial-gradient(circle at 16% 18%, rgba(26, 115, 232, 0.16), transparent 34%),
     radial-gradient(circle at 86% 24%, rgba(16, 185, 129, 0.14), transparent 30%),
     var(--surface);
@@ -1455,10 +1632,28 @@ function onStyleChange(value) {
   color: var(--text);
 }
 
-.hero-copy h2 {
+.hero-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  row-gap: 0.12em;
   font-size: clamp(32px, 5vw, 56px);
   line-height: 1.05;
   letter-spacing: -0.05em;
+}
+
+.blur-word {
+  display: inline-block;
+  margin-right: 0.28em;
+  opacity: 0;
+  filter: blur(10px);
+  transform: translate3d(0, 28px, 0);
+  will-change: transform, opacity, filter;
+}
+
+.blur-word.visible {
+  animation: heroWordReveal 700ms ease-out both;
+  animation-delay: var(--word-delay, 0ms);
 }
 
 .hero-copy p,
@@ -1487,7 +1682,11 @@ function onStyleChange(value) {
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: 18px;
-  background: linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  background:
+    radial-gradient(circle at 18% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   position: relative;
   z-index: 1;
 }
@@ -1540,6 +1739,9 @@ function onStyleChange(value) {
   position: relative;
   overflow: hidden;
   isolation: isolate;
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.18), transparent 42%),
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
 }
 
 .entry-card > * {
@@ -1597,8 +1799,9 @@ function onStyleChange(value) {
 
 .primary-entry {
   background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.18), transparent 42%),
     linear-gradient(135deg, rgba(26, 115, 232, 0.12), transparent),
-    var(--surface);
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
 }
 
 .overview-strip {
@@ -1609,6 +1812,9 @@ function onStyleChange(value) {
 .report-card,
 .doc-card {
   padding: 22px;
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
+    var(--surface);
 }
 
 .overview-strip span,
@@ -1631,6 +1837,9 @@ function onStyleChange(value) {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 16px;
   align-items: center;
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.14), transparent 42%),
+    linear-gradient(180deg, var(--surface-strong), var(--surface-soft));
 }
 
 .page-toolbar h2 {
@@ -1771,9 +1980,14 @@ function onStyleChange(value) {
 .stage {
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface);
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
+    var(--surface);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(16px);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 .rail {
@@ -1800,9 +2014,11 @@ function onStyleChange(value) {
   border: 1px solid rgba(148, 163, 184, 0.08);
   border-radius: 16px;
   background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.06)),
     var(--surface-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(16px);
 }
 
 .section-head {
@@ -2064,12 +2280,43 @@ function onStyleChange(value) {
     repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0 8px, transparent 8px 16px);
   background-size: 100% 100%, 24px 24px;
   transition: width 0.24s ease;
+  transform-origin: left center;
 }
 
 .clip-fill {
   background:
     linear-gradient(90deg, #10b981, var(--accent)),
     repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.22) 0 8px, transparent 8px 16px);
+}
+
+[data-animate-metric] {
+  opacity: 0;
+}
+
+[data-animate-metric].is-visible {
+  opacity: 1;
+}
+
+.metric-bar {
+  transform: scaleX(0.72);
+  transform-origin: left center;
+  will-change: transform, opacity;
+}
+
+.metric-bar.is-visible {
+  animation:
+    metricBarReveal 900ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    stripeShift 1.8s linear infinite;
+}
+
+.metric-ring {
+  transform: scale(0.86) rotate(-8deg);
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.metric-ring.is-visible {
+  animation: metricRingReveal 980ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .status.error {
@@ -2091,7 +2338,13 @@ function onStyleChange(value) {
 .compare-panel {
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface-soft);
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
+    var(--surface-soft);
+  backdrop-filter: blur(16px);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 .summary-item {
@@ -2142,6 +2395,7 @@ function onStyleChange(value) {
   gap: 14px;
   place-items: center;
   background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
     radial-gradient(circle at top, rgba(26, 115, 232, 0.08), transparent 52%),
     var(--surface-soft);
 }
@@ -2229,8 +2483,14 @@ function onStyleChange(value) {
   text-align: left;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface-soft);
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
+    var(--surface-soft);
+  backdrop-filter: blur(16px);
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 .candidate-row.active {
@@ -2514,8 +2774,14 @@ function onStyleChange(value) {
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface-soft);
+  background:
+    radial-gradient(circle at var(--spotlight-x, 50%) var(--spotlight-y, 50%), rgba(26, 115, 232, 0.12), transparent 42%),
+    var(--surface-soft);
+  backdrop-filter: blur(16px);
   font-size: 12px;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 .stage-completed {
@@ -2753,11 +3019,15 @@ pre {
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 12% 20%, rgba(26, 115, 232, 0.08), transparent 18%),
-    radial-gradient(circle at 84% 16%, rgba(16, 185, 129, 0.08), transparent 16%),
-    radial-gradient(circle at 76% 82%, rgba(139, 92, 246, 0.06), transparent 18%);
-  filter: blur(16px);
-  opacity: 0.75;
+    radial-gradient(circle at 12% 20%, rgba(26, 115, 232, 0.16), transparent 18%),
+    radial-gradient(circle at 84% 16%, rgba(16, 185, 129, 0.14), transparent 16%),
+    radial-gradient(circle at 76% 82%, rgba(139, 92, 246, 0.12), transparent 18%),
+    radial-gradient(circle at 52% 50%, rgba(255, 255, 255, 0.14), transparent 30%);
+  background-size: 100% 100%;
+  filter: blur(18px) saturate(1.08);
+  opacity: 0.78;
+  mix-blend-mode: screen;
+  animation: meshDrift 28s ease-in-out infinite alternate;
 }
 
 .app-shell.theme-dark::after {
@@ -3157,6 +3427,66 @@ pre {
   50% {
     transform: translate(-50%, -50%) translateX(12px) scale(1.02);
     opacity: 0.72;
+  }
+}
+
+@keyframes metricBarReveal {
+  0% {
+    transform: scaleX(0.22);
+    opacity: 0;
+  }
+  65% {
+    transform: scaleX(1.03);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes metricRingReveal {
+  0% {
+    transform: scale(0.82) rotate(-10deg);
+    opacity: 0;
+  }
+  62% {
+    transform: scale(1.03) rotate(2deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes heroWordReveal {
+  0% {
+    transform: translate3d(0, 28px, 0);
+    opacity: 0;
+    filter: blur(10px);
+  }
+  50% {
+    transform: translate3d(0, -5px, 0);
+    opacity: 0.56;
+    filter: blur(5px);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+    filter: blur(0px);
+  }
+}
+
+@keyframes meshDrift {
+  0% {
+    transform: translate3d(-1.5%, -0.5%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(1.5%, 1.2%, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(-0.5%, 2%, 0) scale(1.02);
   }
 }
 </style>
