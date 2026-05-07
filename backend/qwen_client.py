@@ -43,7 +43,7 @@ SEMANTIC_PROMPT = """
 - box
 
 请严格输出 JSON，格式如下：
-{
+{{
   "chart_type": "",
   "reason": "",
   "title": "",
@@ -51,7 +51,7 @@ SEMANTIC_PROMPT = """
   "visual_theme": "",
   "palette": ["", ""],
   "keywords": ["", "", ""]
-}
+}}
 
 要求：
 1. 不要输出 Markdown，不要输出解释。

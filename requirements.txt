@@ -1,5 +1,6 @@
 # ================== 核心依赖 ==================
 python-pptx==1.0.2
+numpy<2
 pandas
 plotly
 matplotlib

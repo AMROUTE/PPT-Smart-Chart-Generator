@@ -10,6 +10,9 @@ class PipelineInput:
     current_slide: int = 1
     request_id: str = ""
     semantic_mode: str = "local"
+    chart_type_override: str = ""
+    illustration_style: str = "auto"
+    image_model: str = "local"
 
 
 @dataclass
@@ -18,6 +21,9 @@ class AgentState:
     current_slide: int
     request_id: str = ""
     semantic_mode: str = "local"
+    chart_type_override: str = ""
+    illustration_style: str = "auto"
+    image_model: str = "local"
     text_content: str = ""
     extracted_tables: list[dict[str, Any]] = field(default_factory=list)
     shapes: list[dict[str, Any]] = field(default_factory=list)
@@ -28,6 +34,7 @@ class AgentState:
     illustration_prompt: str = ""
     illustration_image: str = ""
     illustration_image_url: str = ""
+    illustration_meta: dict[str, Any] = field(default_factory=dict)
     final_pptx_path: str = ""
     final_pptx_url: str = ""
     logs: list[str] = field(default_factory=list)
