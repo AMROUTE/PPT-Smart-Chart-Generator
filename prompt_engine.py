@@ -10,12 +10,12 @@ from rag_retriever import retrieve_similar_cases, format_cases_for_prompt
 
 load_dotenv()
 
-API_KEY = os.getenv("OPENAI_API_KEY")
-BASE_URL = os.getenv("OPENAI_BASE_URL")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen-plus")
+API_KEY = os.getenv("QWEN_API_KEY")
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", os.getenv("QWEN_MODEL", "qwen-plus"))
 
 if not API_KEY:
-    raise ValueError("未读取到 OPENAI_API_KEY，请检查 .env 文件。")
+    raise ValueError("未读取到 QWEN_API_KEY，请检查 .env 文件。")
 
 client = OpenAI(
     api_key=API_KEY,

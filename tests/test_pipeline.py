@@ -10,12 +10,22 @@ from backend.pipeline import PIPELINE_NODES, export_pipeline_mermaid, run_pipeli
 from backend.schemas import PipelineInput
 from backend.services import (
     allowed_file,
+    build_slide_preview,
     build_file_metadata,
+    build_health_payload,
     extract_records_from_text,
+    normalize_chart_type_override,
+    normalize_image_model,
+    normalize_illustration_style,
     path_to_asset_url,
     process_demo_text,
     process_local_ppt,
 )
+
+try:
+    from pptx import Presentation
+except ModuleNotFoundError:  # pragma: no cover
+    Presentation = None
 
 
 class PipelineTests(unittest.TestCase):
@@ -59,14 +69,54 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(metadata["suffix"], ".pptx")
 
     def test_process_local_ppt_runs_pipeline(self):
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(b"placeholder")
-            tmp_path = Path(tmp.name)
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-source.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        textbox = slide.shapes.add_textbox(1000000, 1000000, 4000000, 600000)
+        textbox.text_frame.text = "营收趋势分析"
+        rows, cols = 4, 2
+        table = slide.shapes.add_table(rows, cols, 1000000, 1800000, 4000000, 2000000).table
+        table.cell(0, 0).text = "季度"
+        table.cell(0, 1).text = "营收"
+        table.cell(1, 0).text = "Q1"
+        table.cell(1, 1).text = "120"
+        table.cell(2, 0).text = "Q2"
+        table.cell(2, 1).text = "150"
+        table.cell(3, 0).text = "Q3"
+        table.cell(3, 1).text = "180"
+        prs.save(tmp_path)
         try:
-            payload = process_local_ppt(tmp_path, 1)
+            payload = process_local_ppt(
+                tmp_path,
+                1,
+                chart_type_override="line",
+                illustration_style="tech",
+                image_model="flux",
+            )
             self.assertEqual(payload["file"]["slide_number"], 1)
             self.assertIn("pipeline", payload)
             self.assertIn("chart_image_url", payload["pipeline"])
+            self.assertTrue(Path(payload["pipeline"]["final_pptx_path"]).exists())
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_build_slide_preview_returns_preview_asset(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-preview.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        textbox = slide.shapes.add_textbox(1000000, 1000000, 5000000, 1200000)
+        textbox.text_frame.text = "第一页预览测试"
+        prs.save(tmp_path)
+        try:
+            payload = build_slide_preview(1, file_path=tmp_path)
+            self.assertEqual(payload["slide_number"], 1)
+            self.assertEqual(payload["slide_count"], 1)
+            self.assertTrue(Path(payload["preview_image"]).exists())
+            self.assertTrue(payload["preview_image_url"].startswith("/assets/outputs/"))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -76,12 +126,36 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(records[0]["category"], "营收")
 
     def test_process_demo_text_returns_preview_assets(self):
-        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26")
+        payload = process_demo_text(
+            "Q1: 12\nQ2: 18\nQ3: 26",
+            chart_type_override="pie",
+            illustration_style="business",
+            image_model="wanx",
+        )
         self.assertEqual(payload["pipeline"]["status"], "completed")
         self.assertTrue(payload["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))
+        self.assertEqual(payload["pipeline"]["intent"]["chart_type"], "pie")
+        self.assertIn("clip_score", payload["pipeline"]["illustration_meta"])
+        self.assertIn(payload["pipeline"]["illustration_meta"]["generation_source"], {"local", "wanx", "flux"})
+
+    def test_process_demo_text_falls_back_when_remote_image_model_is_unavailable(self):
+        payload = process_demo_text(
+            "营收: 120\n成本: 80\n利润: 40",
+            illustration_style="tech",
+            image_model="wanx",
+        )
+        self.assertEqual(payload["pipeline"]["status"], "completed")
+        self.assertEqual(payload["pipeline"]["illustration_meta"]["generation_source"], "local")
+        self.assertTrue(Path(payload["pipeline"]["illustration_image"]).exists())
 
     def test_path_to_asset_url_maps_output_files(self):
         self.assertEqual(path_to_asset_url("outputs/demo.png"), "/assets/outputs/demo.png")
+
+    def test_normalizers_accept_known_values(self):
+        self.assertEqual(normalize_chart_type_override("line"), "line")
+        self.assertEqual(normalize_chart_type_override("auto"), "")
+        self.assertEqual(normalize_illustration_style("tech"), "tech")
+        self.assertEqual(normalize_image_model("wanx"), "wanx")
 
 
 class AppTests(unittest.TestCase):
@@ -92,6 +166,12 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/pipeline", route_paths)
         self.assertIn("/api/process", route_paths)
         self.assertIn("/api/demo-chart", route_paths)
+        self.assertIn("/api/slide-preview", route_paths)
+
+    def test_health_payload_exposes_image_provider_flags(self):
+        payload = build_health_payload()
+        self.assertIn("wanx_enabled", payload)
+        self.assertIn("flux_enabled", payload)
 
 
 if __name__ == "__main__":

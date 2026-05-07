@@ -27,6 +27,17 @@ class Settings:
         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     )
     qwen_timeout_seconds: int = int(os.getenv("QWEN_TIMEOUT_SECONDS", "25"))
+    wanx_api_key: str = os.getenv("WANX_API_KEY", os.getenv("QWEN_API_KEY", ""))
+    wanx_model: str = os.getenv("WANX_MODEL", "wan2.6-t2i")
+    wanx_base_url: str = os.getenv(
+        "WANX_BASE_URL",
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    )
+    flux_api_key: str = os.getenv("FLUX_API_KEY", "")
+    flux_base_url: str = os.getenv("FLUX_BASE_URL", "https://api.bfl.ai/v1")
+    flux_model_endpoint: str = os.getenv("FLUX_MODEL_ENDPOINT", "flux-pro-1.1")
+    image_generation_timeout_seconds: int = int(os.getenv("IMAGE_GENERATION_TIMEOUT_SECONDS", "90"))
+    image_poll_interval_seconds: float = float(os.getenv("IMAGE_POLL_INTERVAL_SECONDS", "1.5"))
     cors_origins: tuple[str, ...] = ("*",)
 
 

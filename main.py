@@ -1,17 +1,19 @@
-from prompt_engine import semantic_parse
-from chart_generator import draw_chart
+from __future__ import annotations
+
+import json
+
+from backend.services import process_demo_text
 
 
-def main():
-    text = "2020年到2023年销售额分别为100万、150万、220万、300万，整体持续增长。"
+def main() -> None:
+    sample_text = "2020: 100\n2021: 150\n2022: 220\n2023: 300\n整体持续增长。"
+    payload = process_demo_text(sample_text, semantic_mode="local")
 
-    result = semantic_parse(text)
-
-    print("语义识别结果：")
-    print(result)
-
-    output_path = draw_chart(result, "outputs/result.png")
-    print(f"图表已保存到：{output_path}")
+    print("文本演示处理完成：")
+    print(json.dumps(payload["pipeline"]["intent"], ensure_ascii=False, indent=2))
+    print(f"图表预览：{payload['pipeline'].get('chart_image_url', '')}")
+    print(f"配图预览：{payload['pipeline'].get('illustration_image_url', '')}")
+    print(f"增强版 PPT：{payload['pipeline'].get('final_pptx_url', '')}")
 
 
 if __name__ == "__main__":

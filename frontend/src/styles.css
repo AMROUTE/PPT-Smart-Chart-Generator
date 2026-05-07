@@ -149,6 +149,23 @@ textarea {
   box-shadow: 0 16px 30px rgba(201, 95, 46, 0.26);
 }
 
+.secondary-btn {
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid rgba(16, 32, 51, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #132034;
+  padding: 12px 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secondary-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .primary-btn:hover:not(:disabled) {
   transform: translateY(-1px);
 }
@@ -160,6 +177,31 @@ textarea {
 
 .progress-card {
   margin-top: 18px;
+}
+
+.slide-preview-card {
+  margin: 10px 0 18px;
+  padding: 14px;
+  border: 1px solid rgba(16, 32, 51, 0.08);
+  border-radius: 18px;
+  background: rgba(244, 248, 255, 0.82);
+}
+
+.preview-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  color: #42566d;
+}
+
+.slide-preview-image {
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border-radius: 14px;
+  border: 1px solid rgba(16, 32, 51, 0.08);
+  background: #ffffff;
 }
 
 .progress-meta {
@@ -236,6 +278,11 @@ textarea {
   margin: 0 0 8px;
   color: #42566d;
   line-height: 1.6;
+}
+
+.warning-text {
+  color: #b25b2a;
+  font-weight: 600;
 }
 
 .stage-item {
