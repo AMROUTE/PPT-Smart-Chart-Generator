@@ -4,12 +4,15 @@ from pathlib import Path
 import os
 
 os.environ["ENABLE_QWEN_API"] = "0"
+os.environ["DATABASE_PATH"] = str(Path(tempfile.gettempdir()) / "codex-test-app.db")
 
 from backend.app import create_app
+from backend.database import authenticate_or_create_user, init_db
 from backend.pipeline import PIPELINE_NODES, export_pipeline_mermaid, run_pipeline
 from backend.schemas import PipelineInput
 from backend.services import (
     allowed_file,
+    parse_presentation_slides,
     build_slide_preview,
     build_file_metadata,
     build_health_payload,
@@ -58,6 +61,10 @@ class PipelineTests(unittest.TestCase):
 
 
 class ServiceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+
     def test_allowed_file_only_accepts_pptx(self):
         self.assertTrue(allowed_file("demo.pptx"))
         self.assertFalse(allowed_file("demo.pdf"))
@@ -120,6 +127,24 @@ class ServiceTests(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_parse_presentation_slides_returns_outline(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-outline.pptx"
+        prs = Presentation()
+        slide_one = prs.slides.add_slide(prs.slide_layouts[6])
+        slide_one.shapes.add_textbox(1000000, 1000000, 5000000, 1200000).text_frame.text = "第一页标题"
+        slide_two = prs.slides.add_slide(prs.slide_layouts[6])
+        slide_two.shapes.add_textbox(1000000, 1000000, 5000000, 1200000).text_frame.text = "第二页内容"
+        prs.save(tmp_path)
+        try:
+            payload = parse_presentation_slides(file_path=tmp_path)
+            self.assertEqual(payload["slide_count"], 2)
+            self.assertEqual(len(payload["slides"]), 2)
+            self.assertEqual(payload["slides"][0]["slide_number"], 1)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     def test_extract_records_from_text_supports_demo_mode(self):
         records = extract_records_from_text("营收: 120\n利润: 45")
         self.assertEqual(len(records), 2)
@@ -167,11 +192,21 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/process", route_paths)
         self.assertIn("/api/demo-chart", route_paths)
         self.assertIn("/api/slide-preview", route_paths)
+        self.assertIn("/api/parse-slides", route_paths)
+        self.assertIn("/api/auth/login", route_paths)
+        self.assertIn("/api/jobs", route_paths)
 
     def test_health_payload_exposes_image_provider_flags(self):
         payload = build_health_payload()
         self.assertIn("wanx_enabled", payload)
         self.assertIn("flux_enabled", payload)
+        self.assertEqual(payload["database_engine"], "sqlite")
+
+    def test_authenticate_or_create_user_persists_user(self):
+        user = authenticate_or_create_user("codex-demo", "demo123")
+        self.assertEqual(user["username"], "codex-demo")
+        same_user = authenticate_or_create_user("codex-demo", "demo123")
+        self.assertEqual(user["id"], same_user["id"])
 
 
 if __name__ == "__main__":

@@ -17,16 +17,17 @@ def _download_image(url: str, output_path: Path) -> Path:
     return output_path
 
 
-def generate_wanx_image(prompt: str, output_path: str | Path) -> Path:
+def generate_wanx_image(prompt: str, output_path: str | Path, api_key: str = "") -> Path:
     settings = get_settings()
-    if not settings.wanx_api_key:
+    resolved_api_key = api_key or settings.wanx_api_key
+    if not resolved_api_key:
         raise RuntimeError("WANX_API_KEY is not configured.")
 
     target_path = Path(output_path).with_suffix(".png")
     response = requests.post(
         settings.wanx_base_url,
         headers={
-            "Authorization": f"Bearer {settings.wanx_api_key}",
+            "Authorization": f"Bearer {resolved_api_key}",
             "Content-Type": "application/json",
         },
         json={
@@ -81,16 +82,17 @@ def _resolve_flux_result_url(payload: dict[str, Any]) -> str:
     raise RuntimeError(f"FLUX response does not contain a downloadable image URL: {payload}")
 
 
-def generate_flux_image(prompt: str, output_path: str | Path) -> Path:
+def generate_flux_image(prompt: str, output_path: str | Path, api_key: str = "") -> Path:
     settings = get_settings()
-    if not settings.flux_api_key:
+    resolved_api_key = api_key or settings.flux_api_key
+    if not resolved_api_key:
         raise RuntimeError("FLUX_API_KEY is not configured.")
 
     target_path = Path(output_path).with_suffix(".png")
     submit_response = requests.post(
         f"{settings.flux_base_url.rstrip('/')}/{settings.flux_model_endpoint.lstrip('/')}",
         headers={
-            "x-key": settings.flux_api_key,
+            "x-key": resolved_api_key,
             "Content-Type": "application/json",
         },
         json={
@@ -114,7 +116,7 @@ def generate_flux_image(prompt: str, output_path: str | Path) -> Path:
     while time.time() < deadline:
         poll_response = requests.get(
             polling_url,
-            headers={"x-key": settings.flux_api_key},
+            headers={"x-key": resolved_api_key},
             timeout=settings.image_generation_timeout_seconds,
         )
         poll_response.raise_for_status()

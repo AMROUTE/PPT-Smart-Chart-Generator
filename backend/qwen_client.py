@@ -30,7 +30,7 @@ CHART_TYPE_MAP = {
 
 SEMANTIC_PROMPT = """
 你是“PPT 智能图表生成系统”的语义分析模块。
-请根据输入的文本和表格摘要，判断最适合的图表类型，并生成一个更贴近主题的配图创意方向。
+请根据输入的文本和表格摘要，判断最适合的图表类型，并生成一个更贴近业务主题的配图创意方向。
 
 只允许从以下图表类型中选一个：
 - bar
@@ -56,9 +56,9 @@ SEMANTIC_PROMPT = """
 要求：
 1. 不要输出 Markdown，不要输出解释。
 2. reason 用中文，一句话说明判断依据。
-3. visual_theme 用中文短语，例如“科技商业增长插画”“教育数据分析卡片”。
+3. visual_theme 只描述业务主题、人物场景、空间氛围或行业视觉，不要出现图表、图形、数据看板、坐标轴、柱状图、折线图、饼图等词。
 4. palette 返回 2 到 3 个颜色名或中文颜色描述。
-5. keywords 返回 3 个左右与主题相关的关键词。
+5. keywords 返回 3 个左右与主题相关的关键词，同样不要包含图表、图形、数据看板、坐标轴、柱状图、折线图、饼图等词。
 
 文本内容：
 {text_content}
@@ -81,8 +81,8 @@ def _extract_json(content: str) -> dict[str, Any]:
 
 def _normalize_semantic_result(result: dict[str, Any]) -> dict[str, Any]:
     chart_type = CHART_TYPE_MAP.get(str(result.get("chart_type", "")).strip().lower(), "bar")
-    palette = result.get("palette") or ["蓝色", "青色"]
-    keywords = result.get("keywords") or ["数据", "分析", "表达"]
+    palette = result.get("palette") or ["深蓝", "暖白"]
+    keywords = result.get("keywords") or ["业务场景", "人物", "空间氛围"]
     if not isinstance(palette, list):
         palette = [str(palette)]
     if not isinstance(keywords, list):
@@ -92,19 +92,26 @@ def _normalize_semantic_result(result: dict[str, Any]) -> dict[str, Any]:
         "reason": str(result.get("reason", "模型未提供判断依据。")).strip(),
         "title": str(result.get("title", f"{chart_type.title()} 图表推荐")).strip(),
         "audience": str(result.get("audience", "business")).strip() or "business",
-        "visual_theme": str(result.get("visual_theme", "科技数据分析插画")).strip(),
+        "visual_theme": str(result.get("visual_theme", "商务办公人物场景")).strip(),
         "palette": [str(item).strip() for item in palette[:3] if str(item).strip()],
         "keywords": [str(item).strip() for item in keywords[:4] if str(item).strip()],
     }
 
 
-def analyze_semantics_with_qwen(text_content: str, table_summary: str) -> dict[str, Any]:
+def analyze_semantics_with_qwen(
+    text_content: str,
+    table_summary: str,
+    api_key: str = "",
+    model: str = "",
+) -> dict[str, Any]:
     settings = get_settings()
-    if not settings.enable_qwen_api or not settings.qwen_api_key:
+    resolved_api_key = api_key or settings.qwen_api_key
+    resolved_model = model or settings.qwen_model
+    if not settings.enable_qwen_api or not resolved_api_key:
         raise RuntimeError("Qwen API is disabled or API key is missing.")
 
     payload = {
-        "model": settings.qwen_model,
+        "model": resolved_model,
         "messages": [
             {"role": "system", "content": "你擅长中文语义理解、图表推荐和视觉创意归纳。"},
             {
@@ -120,7 +127,7 @@ def analyze_semantics_with_qwen(text_content: str, table_summary: str) -> dict[s
     response = requests.post(
         settings.qwen_base_url,
         headers={
-            "Authorization": f"Bearer {settings.qwen_api_key}",
+            "Authorization": f"Bearer {resolved_api_key}",
             "Content-Type": "application/json",
         },
         json=payload,

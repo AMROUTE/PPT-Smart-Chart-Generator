@@ -7,6 +7,13 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 
 from backend.config import get_settings
+from backend.database import (
+    database_health,
+    fetch_upload_session,
+    record_processing_job,
+    record_slide_outline,
+    record_upload_session,
+)
 from backend.schemas import PipelineInput
 
 
@@ -47,7 +54,8 @@ def next_request_id(prefix: str = "req") -> str:
 
 def resolve_upload_token(upload_token: str) -> Path:
     token = Path(upload_token).name
-    target = ensure_upload_dir() / token
+    record = fetch_upload_session(token)
+    target = Path(record["stored_path"]) if record else ensure_upload_dir() / token
     if not target.exists():
         raise FileNotFoundError("Uploaded PPT session not found. Please re-upload the file.")
     return target
@@ -107,6 +115,10 @@ def process_local_ppt(
     chart_type_override: str = "",
     illustration_style: str = "auto",
     image_model: str = "local",
+    custom_qwen_api_key: str = "",
+    custom_qwen_model: str = "",
+    custom_wanx_api_key: str = "",
+    custom_flux_api_key: str = "",
 ) -> dict[str, Any]:
     from backend.pipeline import run_pipeline
 
@@ -130,7 +142,23 @@ def process_local_ppt(
             chart_type_override=resolved_chart_type,
             illustration_style=resolved_style,
             image_model=resolved_model,
+            custom_qwen_api_key=custom_qwen_api_key.strip(),
+            custom_qwen_model=custom_qwen_model.strip(),
+            custom_wanx_api_key=custom_wanx_api_key.strip(),
+            custom_flux_api_key=custom_flux_api_key.strip(),
         )
+    )
+    record_processing_job(
+        request_id=result["request_id"],
+        upload_token=ppt_path.name,
+        source_type="ppt",
+        slide_number=slide_number,
+        semantic_mode=resolved_mode,
+        chart_type_override=resolved_chart_type,
+        illustration_style=resolved_style,
+        image_model=resolved_model,
+        status=result.get("status", "completed"),
+        final_pptx_path=result.get("final_pptx_path", ""),
     )
     enrich_pipeline_assets(result)
     return {
@@ -174,6 +202,10 @@ def process_demo_text(
     chart_type_override: str = "",
     illustration_style: str = "auto",
     image_model: str = "local",
+    custom_qwen_api_key: str = "",
+    custom_qwen_model: str = "",
+    custom_wanx_api_key: str = "",
+    custom_flux_api_key: str = "",
 ) -> dict[str, Any]:
     from backend.pipeline import run_pipeline
 
@@ -182,15 +214,20 @@ def process_demo_text(
     resolved_chart_type = normalize_chart_type_override(chart_type_override)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
+    request_id = next_request_id("demo")
     result = run_pipeline(
         {
-            "request_id": next_request_id("demo"),
+            "request_id": request_id,
             "ppt_path": "demo_text_input.pptx",
             "current_slide": 1,
             "semantic_mode": resolved_mode,
             "chart_type_override": resolved_chart_type,
             "illustration_style": resolved_style,
             "image_model": resolved_model,
+            "custom_qwen_api_key": custom_qwen_api_key.strip(),
+            "custom_qwen_model": custom_qwen_model.strip(),
+            "custom_wanx_api_key": custom_wanx_api_key.strip(),
+            "custom_flux_api_key": custom_flux_api_key.strip(),
             "text_content": source_text.strip(),
             "extracted_tables": [
                 {
@@ -205,6 +242,18 @@ def process_demo_text(
             "retry_counts": {},
             "stage_history": [],
         }
+    )
+    record_processing_job(
+        request_id=request_id,
+        upload_token="demo",
+        source_type="demo",
+        slide_number=1,
+        semantic_mode=resolved_mode,
+        chart_type_override=resolved_chart_type,
+        illustration_style=resolved_style,
+        image_model=resolved_model,
+        status=result.get("status", "completed"),
+        final_pptx_path=result.get("final_pptx_path", ""),
     )
     enrich_pipeline_assets(result)
     return {
@@ -253,11 +302,40 @@ def build_slide_preview(
     }
 
 
+def parse_presentation_slides(file_path: str | Path | None = None, upload_token: str = "") -> dict[str, Any]:
+    from backend.ppt_parser import get_slide_count, parse_presentation_outline
+
+    if file_path is not None:
+        ppt_path = Path(file_path)
+    elif upload_token:
+        ppt_path = resolve_upload_token(upload_token)
+    else:
+        raise ValueError("Please upload a .pptx file first.")
+
+    if not ppt_path.exists():
+        raise FileNotFoundError(f"PPT file not found: {ppt_path}")
+    if not allowed_file(ppt_path.name):
+        raise ValueError("Only .pptx files are supported.")
+
+    slides = parse_presentation_outline(ppt_path)
+    slides_payload = [item.to_dict() for item in slides]
+    record_slide_outline(ppt_path.name, slides_payload)
+    return {
+        "message": "Presentation outline parsed successfully.",
+        "upload_token": ppt_path.name,
+        "slide_count": get_slide_count(ppt_path),
+        "slides": slides_payload,
+        "file": build_file_metadata(ppt_path, 1),
+    }
+
+
 def save_upload(filename: str, content: bytes) -> Path:
     suffix = Path(filename).suffix
     with NamedTemporaryFile(delete=False, suffix=suffix, dir=ensure_upload_dir()) as temp_file:
         temp_file.write(content)
-        return Path(temp_file.name)
+        saved_path = Path(temp_file.name)
+    record_upload_session(saved_path.name, filename, saved_path, saved_path.stat().st_size)
+    return saved_path
 
 
 def build_health_payload() -> dict[str, Any]:
@@ -265,6 +343,7 @@ def build_health_payload() -> dict[str, Any]:
 
     settings = get_settings()
     mermaid = export_pipeline_mermaid()
+    database_payload = database_health()
     return {
         "status": "ok",
         "frontend": "vue",
@@ -286,5 +365,7 @@ def build_health_payload() -> dict[str, Any]:
             "ppt-writeback",
             "chart-override",
             "style-selection",
+            "sqlite-database",
         ],
+        **database_payload,
     }

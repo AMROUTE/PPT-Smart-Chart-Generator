@@ -48,6 +48,24 @@ class SlidePreview:
         }
 
 
+@dataclass
+class SlideOutlineItem:
+    slide_number: int
+    text_content: str
+    table_count: int
+    shape_count: int
+    table_titles: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slide_number": self.slide_number,
+            "text_content": self.text_content,
+            "table_count": self.table_count,
+            "shape_count": self.shape_count,
+            "table_titles": self.table_titles,
+        }
+
+
 def normalize_header(value: str | None, index: int) -> str:
     text = (value or "").strip()
     return text or f"column_{index + 1}"
@@ -297,3 +315,31 @@ def render_slide_preview(ppt_path: str | Path, slide_number: int, output_path: s
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output)
     return SlidePreview(slide_number=slide_number, slide_count=slide_count, output_path=str(output))
+
+
+def parse_presentation_outline(ppt_path: str | Path) -> list[SlideOutlineItem]:
+    if Presentation is None:
+        raise ModuleNotFoundError("python-pptx is required for parse_presentation_outline.")
+
+    presentation_path = Path(ppt_path)
+    if not presentation_path.exists():
+        raise FileNotFoundError(f"PPT file not found: {presentation_path}")
+
+    presentation = Presentation(str(presentation_path))
+    items: list[SlideOutlineItem] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        tables = extract_tables(slide)
+        shapes = extract_shapes(slide)
+        text_blocks = [shape["text"] for shape in shapes if shape.get("text")]
+        if not tables:
+            tables = infer_table_from_text_blocks(text_blocks)
+        items.append(
+            SlideOutlineItem(
+                slide_number=slide_index,
+                text_content="\n".join(text_blocks)[:600],
+                table_count=len(tables),
+                shape_count=len(shapes),
+                table_titles=[table.get("title", f"table_{table_index + 1}") for table_index, table in enumerate(tables)],
+            )
+        )
+    return items

@@ -18,6 +18,7 @@ class Settings:
     upload_dir: str = os.getenv("UPLOAD_DIR", "data/uploads")
     output_dir: str = os.getenv("OUTPUT_DIR", "outputs")
     log_dir: str = os.getenv("LOG_DIR", "logs")
+    database_path: str = os.getenv("DATABASE_PATH", "data/app.db")
     max_retries: int = int(os.getenv("PIPELINE_MAX_RETRIES", "2"))
     enable_qwen_api: bool = os.getenv("ENABLE_QWEN_API", "1") == "1"
     qwen_api_key: str = os.getenv("QWEN_API_KEY", "")

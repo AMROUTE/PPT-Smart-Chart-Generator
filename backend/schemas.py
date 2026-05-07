@@ -13,6 +13,10 @@ class PipelineInput:
     chart_type_override: str = ""
     illustration_style: str = "auto"
     image_model: str = "local"
+    custom_qwen_api_key: str = ""
+    custom_qwen_model: str = ""
+    custom_wanx_api_key: str = ""
+    custom_flux_api_key: str = ""
 
 
 @dataclass
@@ -24,6 +28,10 @@ class AgentState:
     chart_type_override: str = ""
     illustration_style: str = "auto"
     image_model: str = "local"
+    custom_qwen_api_key: str = ""
+    custom_qwen_model: str = ""
+    custom_wanx_api_key: str = ""
+    custom_flux_api_key: str = ""
     text_content: str = ""
     extracted_tables: list[dict[str, Any]] = field(default_factory=list)
     shapes: list[dict[str, Any]] = field(default_factory=list)

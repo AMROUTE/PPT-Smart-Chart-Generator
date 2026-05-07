@@ -14,14 +14,17 @@ from backend.services import (
     build_health_payload,
     ensure_output_dir,
     ensure_upload_dir,
+    parse_presentation_slides,
     process_local_ppt,
     process_demo_text,
     save_upload,
 )
+from backend.database import authenticate_or_create_user, init_db, list_recent_jobs
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    init_db()
     app = FastAPI(
         title=settings.app_name,
         version=settings.version,
@@ -48,6 +51,19 @@ def create_app() -> FastAPI:
 
         return {"mermaid": export_pipeline_mermaid()}
 
+    @app.post("/api/auth/login")
+    async def login(username: str = Form(...), password: str = Form(...)) -> JSONResponse:
+        try:
+            user = authenticate_or_create_user(username, password)
+            return JSONResponse(
+                {
+                    "message": "Login successful.",
+                    "user": user,
+                }
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/process")
     async def process_upload(
         file: UploadFile = File(...),
@@ -56,6 +72,10 @@ def create_app() -> FastAPI:
         chart_type_override: str = Form(""),
         illustration_style: str = Form("auto"),
         image_model: str = Form("local"),
+        custom_qwen_api_key: str = Form(""),
+        custom_qwen_model: str = Form(""),
+        custom_wanx_api_key: str = Form(""),
+        custom_flux_api_key: str = Form(""),
     ) -> JSONResponse:
         if not file.filename or not allowed_file(file.filename):
             raise HTTPException(status_code=400, detail="Please upload a .pptx file.")
@@ -69,6 +89,10 @@ def create_app() -> FastAPI:
                 chart_type_override=chart_type_override,
                 illustration_style=illustration_style,
                 image_model=image_model,
+                custom_qwen_api_key=custom_qwen_api_key,
+                custom_qwen_model=custom_qwen_model,
+                custom_wanx_api_key=custom_wanx_api_key,
+                custom_flux_api_key=custom_flux_api_key,
             )
             return JSONResponse(payload)
         except (FileNotFoundError, ValueError) as exc:
@@ -83,6 +107,10 @@ def create_app() -> FastAPI:
         chart_type_override: str = Form(""),
         illustration_style: str = Form("auto"),
         image_model: str = Form("local"),
+        custom_qwen_api_key: str = Form(""),
+        custom_qwen_model: str = Form(""),
+        custom_wanx_api_key: str = Form(""),
+        custom_flux_api_key: str = Form(""),
     ) -> JSONResponse:
         if not source_text.strip():
             raise HTTPException(status_code=400, detail="Please provide demo text.")
@@ -93,6 +121,10 @@ def create_app() -> FastAPI:
                 chart_type_override=chart_type_override,
                 illustration_style=illustration_style,
                 image_model=image_model,
+                custom_qwen_api_key=custom_qwen_api_key,
+                custom_qwen_model=custom_qwen_model,
+                custom_wanx_api_key=custom_wanx_api_key,
+                custom_flux_api_key=custom_flux_api_key,
             )
             return JSONResponse(payload)
         except (FileNotFoundError, ValueError) as exc:
@@ -121,6 +153,31 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Slide preview failed: {exc}") from exc
+
+    @app.post("/api/parse-slides")
+    async def parse_slides(
+        file: Optional[UploadFile] = File(default=None),
+        upload_token: str = Form(""),
+    ) -> JSONResponse:
+        if file is None and not upload_token.strip():
+            raise HTTPException(status_code=400, detail="Please upload a .pptx file first.")
+        if file is not None and file.filename and not allowed_file(file.filename):
+            raise HTTPException(status_code=400, detail="Please upload a .pptx file.")
+
+        temp_path = None
+        if file is not None and file.filename:
+            temp_path = save_upload(file.filename, await file.read())
+        try:
+            payload = parse_presentation_slides(file_path=temp_path, upload_token=upload_token)
+            return JSONResponse(payload)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Slide parsing failed: {exc}") from exc
+
+    @app.get("/api/jobs")
+    def jobs(limit: int = 30) -> JSONResponse:
+        return JSONResponse({"jobs": list_recent_jobs(limit=limit)})
 
     return app
 

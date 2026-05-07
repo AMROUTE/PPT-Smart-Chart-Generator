@@ -34,6 +34,34 @@ STEP_PROGRESS = {
     "save_pptx": 100,
 }
 
+ILLUSTRATION_FORBIDDEN_TERMS = {
+    "图表",
+    "图形",
+    "图示",
+    "图像化数据",
+    "数据看板",
+    "看板",
+    "坐标轴",
+    "柱状图",
+    "折线图",
+    "饼图",
+    "散点图",
+    "热力图",
+    "箱线图",
+    "面积图",
+    "直方图",
+    "chart",
+    "charts",
+    "graph",
+    "graphs",
+    "dashboard",
+    "bar",
+    "line",
+    "pie",
+    "scatter",
+    "heatmap",
+}
+
 
 def _normalize_chart_override(chart_type: str | None) -> str:
     normalized = (chart_type or "").strip().lower()
@@ -48,6 +76,51 @@ def _normalize_illustration_style(style: str | None) -> str:
 def _normalize_image_model(model: str | None) -> str:
     normalized = (model or "local").strip().lower()
     return normalized if normalized in {"local", "flux", "wanx"} else "local"
+
+
+def _sanitize_illustration_text(text: str) -> str:
+    sanitized = text or ""
+    for term in ILLUSTRATION_FORBIDDEN_TERMS:
+        sanitized = sanitized.replace(term, "")
+        sanitized = sanitized.replace(term.title(), "")
+        sanitized = sanitized.replace(term.upper(), "")
+    sanitized = " ".join(part for part in sanitized.split() if part.strip())
+    return sanitized.strip("，,、;； ")
+
+
+def _sanitize_keywords(keywords: list[str]) -> list[str]:
+    sanitized: list[str] = []
+    for keyword in keywords:
+        cleaned = _sanitize_illustration_text(str(keyword))
+        if cleaned and cleaned not in sanitized:
+            sanitized.append(cleaned)
+    return sanitized
+
+
+def _build_illustration_prompt(
+    visual_theme: str,
+    style_hint: str,
+    image_model: str,
+    summary: str,
+    keywords: list[str],
+    audience: str,
+) -> str:
+    sanitized_theme = _sanitize_illustration_text(visual_theme) or "业务主题场景插画"
+    sanitized_summary = _sanitize_illustration_text(summary)
+    sanitized_keywords = _sanitize_keywords(keywords)
+    style_text = "自动" if style_hint == "auto" else style_hint
+    parts = [
+        f"主题：{sanitized_theme}",
+        f"风格：{style_text}",
+        f"受众：{audience or 'business'}",
+    ]
+    if sanitized_summary:
+        parts.append(f"内容方向：{sanitized_summary}")
+    if sanitized_keywords:
+        parts.append(f"元素关键词：{'、'.join(sanitized_keywords[:4])}")
+    parts.append("要求：仅描述人物、空间、物件、行业氛围与场景，不要出现图表、图形、坐标轴、数据看板或任何统计图元素。")
+    parts.append(f"调用模型：{image_model}")
+    return "；".join(parts)
 
 
 def _estimate_clip_score(text_content: str, visual_theme: str, keywords: list[str], style: str, image_model: str) -> float:
@@ -181,9 +254,9 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
         "audience": "business",
         "summary": "Inferred from slide text, label pattern, and extracted table structure.",
         "reason": "基于文本关键词、标签模式和表格结构进行规则判断。",
-        "visual_theme": "科技数据分析插画" if illustration_style == "auto" else f"{illustration_style} 风格配图",
+        "visual_theme": "商务办公人物场景" if illustration_style == "auto" else f"{illustration_style} 场景配图",
         "palette": ["深蓝", "天蓝"],
-        "keywords": ["数据", "分析", "业务"],
+        "keywords": ["办公空间", "人物协作", "业务氛围"],
         "source": "heuristic",
         "semantic_mode": "local",
         "image_model": image_model,
@@ -193,16 +266,21 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
         try:
             from backend.qwen_client import analyze_semantics_with_qwen
 
-            llm_result = analyze_semantics_with_qwen(state.get("text_content", ""), table_summary)
+            llm_result = analyze_semantics_with_qwen(
+                state.get("text_content", ""),
+                table_summary,
+                api_key=str(state.get("custom_qwen_api_key", "") or ""),
+                model=str(state.get("custom_qwen_model", "") or ""),
+            )
             state["intent"] = {
                 "task": "chart_generation",
                 "chart_type": chart_override or llm_result["chart_type"],
                 "audience": llm_result["audience"],
                 "summary": llm_result["title"],
                 "reason": llm_result["reason"] if not chart_override else f"用户手动指定图表类型为 {chart_override}，保留千问语义分析结果。",
-                "visual_theme": llm_result["visual_theme"] if illustration_style == "auto" else f"{illustration_style} 风格配图",
+                "visual_theme": llm_result["visual_theme"] if illustration_style == "auto" else f"{illustration_style} 场景配图",
                 "palette": llm_result["palette"],
-                "keywords": llm_result["keywords"],
+                "keywords": _sanitize_keywords(llm_result["keywords"]),
                 "source": "qwen",
                 "model": get_settings().qwen_model,
                 "semantic_mode": "qwen",
@@ -348,14 +426,13 @@ def _write_illustration_png(
     visual_theme: str,
     style_hint: str,
     image_model: str,
-    chart_type: str,
 ) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     theme_lower = visual_theme.lower()
     header = "Illustration Preview"
-    subheader = f"{style_hint.title()} style · {image_model.upper()} · {chart_type.title()}"
+    subheader = f"{style_hint.title()} style · {image_model.upper()}"
 
     if style_hint == "business" or any(keyword in theme_lower for keyword in ["business", "finance", "商业", "营收"]):
         accent = "#f59e0b"
@@ -469,8 +546,13 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     style_hint = _normalize_illustration_style(state.get("illustration_style"))
     image_model = _normalize_image_model(state.get("image_model"))
     visual_theme = state["intent"].get("visual_theme", "智能配图预览")
-    state["illustration_prompt"] = (
-        f"{visual_theme}，风格：{style_hint}，模型：{image_model}"
+    state["illustration_prompt"] = _build_illustration_prompt(
+        visual_theme=visual_theme,
+        style_hint=style_hint,
+        image_model=image_model,
+        summary=str(state["intent"].get("summary", "")),
+        keywords=list(state["intent"].get("keywords", [])),
+        audience=str(state["intent"].get("audience", "business")),
     )
     output_path = (
         Path(get_settings().output_dir)
@@ -483,9 +565,17 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
             from backend.image_clients import generate_flux_image, generate_wanx_image
 
             if image_model == "wanx":
-                generate_wanx_image(state["illustration_prompt"], output_path)
+                generate_wanx_image(
+                    state["illustration_prompt"],
+                    output_path,
+                    api_key=str(state.get("custom_wanx_api_key", "") or ""),
+                )
             else:
-                generate_flux_image(state["illustration_prompt"], output_path)
+                generate_flux_image(
+                    state["illustration_prompt"],
+                    output_path,
+                    api_key=str(state.get("custom_flux_api_key", "") or ""),
+                )
             generation_source = image_model
             append_log(state, f"Illustration generated through {image_model.upper()} API.")
         except Exception as exc:
@@ -498,14 +588,13 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
             visual_theme=visual_theme,
             style_hint=style_hint,
             image_model=image_model,
-            chart_type=state["intent"].get("chart_type", "bar"),
         )
 
     state["illustration_image"] = str(output_path)
     clip_score = _estimate_clip_score(
         state.get("text_content", ""),
         state["intent"].get("visual_theme", ""),
-        state["intent"].get("keywords", []),
+        _sanitize_keywords(state["intent"].get("keywords", [])),
         style_hint,
         image_model,
     )
@@ -521,6 +610,7 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     state["intent"]["clip_score"] = clip_score
     state["intent"]["image_model"] = image_model
     state["intent"]["illustration_style"] = style_hint
+    state["intent"]["keywords"] = _sanitize_keywords(state["intent"].get("keywords", []))
     return append_log(state, "Illustration preview asset generated.")
 
 
