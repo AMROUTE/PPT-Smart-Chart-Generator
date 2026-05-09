@@ -1,77 +1,98 @@
 <script setup>
+import SelectMenu from "../components/SelectMenu.vue";
+import { illustrationStyleOptions, imageModelOptions, semanticModeOptions } from "../config/options";
 import { useUserSettings } from "../composables/useUserSettings";
 
 const { settings, resetSettings } = useUserSettings();
 </script>
 
 <template>
-  <main class="page-shell inner-page">
-    <section class="hero-card">
-      <p class="eyebrow">Personal Settings</p>
-      <h1>个人设置</h1>
-      <p class="hero-copy">
-        在这里配置你自己的 API key、默认语义模式、默认配图模型和调用模型。保存后，工作台会自动带上这些配置。
-      </p>
-    </section>
+  <main class="w-full">
+    <div class="mx-auto w-full max-w-6xl p-8">
+      <div class="space-y-8">
+        <section class="rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+          <p class="text-[11px] font-medium uppercase tracking-[0.24em] text-gray-400">Personal Settings</p>
+          <h1 class="mt-3 text-5xl font-semibold tracking-tight text-gray-900">个人设置</h1>
+          <p class="mt-4 max-w-3xl text-base leading-7 text-gray-500">
+            在这里配置你自己的 API key、默认语义模式、默认配图模型和调用模型。保存后，工作台会自动带上这些配置。
+          </p>
+        </section>
 
-    <section class="workspace-grid workspace-grid-wide">
-      <div class="panel">
-        <h2>模型与 Key</h2>
-        <label class="field">
-          <span>Qwen API Key</span>
-          <input v-model="settings.customQwenApiKey" type="password" placeholder="留空则使用系统默认 key" />
-        </label>
+        <section class="grid grid-cols-12 gap-8">
+          <div class="col-span-12 lg:col-span-7 rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+            <h2 class="text-2xl font-semibold tracking-tight text-gray-900">模型与 Key</h2>
+            <div class="mt-8 space-y-5">
+              <label class="block space-y-2">
+                <span class="text-sm font-medium text-gray-500">Qwen API Key</span>
+                <input
+                  v-model="settings.customQwenApiKey"
+                  type="password"
+                  placeholder="留空则使用系统默认 key"
+                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
+                />
+              </label>
 
-        <label class="field">
-          <span>Qwen 模型</span>
-          <input v-model="settings.customQwenModel" type="text" placeholder="例如：qwen-plus" />
-        </label>
+              <label class="block space-y-2">
+                <span class="text-sm font-medium text-gray-500">Qwen 模型</span>
+                <input
+                  v-model="settings.customQwenModel"
+                  type="text"
+                  placeholder="例如：qwen-plus"
+                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
+                />
+              </label>
 
-        <label class="field">
-          <span>WANX API Key</span>
-          <input v-model="settings.customWanxApiKey" type="password" placeholder="用于通义万相配图" />
-        </label>
+              <label class="block space-y-2">
+                <span class="text-sm font-medium text-gray-500">WANX API Key</span>
+                <input
+                  v-model="settings.customWanxApiKey"
+                  type="password"
+                  placeholder="用于通义万相配图"
+                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
+                />
+              </label>
 
-        <label class="field">
-          <span>FLUX API Key</span>
-          <input v-model="settings.customFluxApiKey" type="password" placeholder="用于 Flux 配图" />
-        </label>
+              <label class="block space-y-2">
+                <span class="text-sm font-medium text-gray-500">FLUX API Key</span>
+                <input
+                  v-model="settings.customFluxApiKey"
+                  type="password"
+                  placeholder="用于 Flux 配图"
+                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div class="relative z-10 col-span-12 overflow-visible lg:col-span-5 rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+            <h2 class="text-2xl font-semibold tracking-tight text-gray-900">默认调用配置</h2>
+            <div class="mt-8 space-y-5">
+              <label class="relative block space-y-2">
+                <span class="text-sm font-medium text-gray-500">默认语义模式</span>
+                <SelectMenu v-model="settings.defaultSemanticMode" :options="semanticModeOptions" />
+              </label>
+
+              <label class="relative block space-y-2">
+                <span class="text-sm font-medium text-gray-500">默认配图模型</span>
+                <SelectMenu v-model="settings.defaultImageModel" :options="imageModelOptions" />
+              </label>
+
+              <label class="relative block space-y-2">
+                <span class="text-sm font-medium text-gray-500">默认配图风格</span>
+                <SelectMenu v-model="settings.defaultIllustrationStyle" :options="illustrationStyleOptions" />
+              </label>
+
+              <button
+                type="button"
+                class="mt-2 w-full rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition-all duration-200 ease-in-out hover:bg-gray-50 active:scale-[0.98]"
+                @click="resetSettings"
+              >
+                恢复默认配置
+              </button>
+            </div>
+          </div>
+        </section>
       </div>
-
-      <div class="panel">
-        <h2>默认调用配置</h2>
-        <label class="field">
-          <span>默认语义模式</span>
-          <select v-model="settings.defaultSemanticMode">
-            <option value="local">本地规则</option>
-            <option value="qwen">千问 API</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>默认配图模型</span>
-          <select v-model="settings.defaultImageModel">
-            <option value="local">本地预览</option>
-            <option value="wanx">通义万相</option>
-            <option value="flux">Flux</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>默认配图风格</span>
-          <select v-model="settings.defaultIllustrationStyle">
-            <option value="auto">自动</option>
-            <option value="business">商务风</option>
-            <option value="tech">科技风</option>
-            <option value="education">教育风</option>
-            <option value="medical">医疗风</option>
-            <option value="academic">学术风</option>
-            <option value="sketch">手绘风</option>
-          </select>
-        </label>
-
-        <button class="secondary-btn" @click="resetSettings">恢复默认配置</button>
-      </div>
-    </section>
+    </div>
   </main>
 </template>

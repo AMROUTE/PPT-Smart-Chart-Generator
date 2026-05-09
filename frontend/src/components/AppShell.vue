@@ -16,27 +16,59 @@ const navItems = [
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside class="sidebar-card">
-      <div>
-        <p class="eyebrow">SmartChart Hub</p>
-        <h2 class="sidebar-title">项目工作区</h2>
+  <div class="flex h-screen w-full overflow-hidden bg-[#F9F9F9]">
+    <aside class="flex h-full w-64 flex-shrink-0 flex-col justify-between border-r border-gray-200 bg-white/50 p-4 backdrop-blur-xl">
+      <div class="space-y-8">
+        <div class="space-y-3 px-2 pt-2">
+          <p class="text-[11px] font-medium uppercase tracking-[0.24em] text-gray-400">SmartChart Hub</p>
+          <h2 class="text-[30px] font-semibold tracking-tight text-gray-900">项目工作区</h2>
+        </div>
+
+        <nav class="space-y-2">
+          <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" custom v-slot="{ navigate, isActive }">
+            <button
+              type="button"
+              class="w-full rounded-full px-4 py-3 text-left text-sm font-medium transition-all duration-300 ease-in-out"
+              :class="
+                isActive
+                  ? 'bg-gray-200/70 text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:-translate-y-0.5 hover:bg-white/80 hover:text-gray-900 hover:shadow-sm'
+              "
+              @click="navigate"
+            >
+              {{ item.label }}
+            </button>
+          </RouterLink>
+        </nav>
       </div>
 
-      <nav class="sidebar-nav">
-        <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" class="sidebar-link">
-          {{ item.label }}
-        </RouterLink>
-      </nav>
+      <div class="space-y-4 rounded-2xl border border-white/50 bg-white/70 p-4 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gray-100 text-gray-500">
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 12c2.761 0 5-2.462 5-5.5S14.761 1 12 1 7 3.462 7 6.5 9.239 12 12 12Zm0 2c-4.418 0-8 2.91-8 6.5 0 .828.672 1.5 1.5 1.5h13c.828 0 1.5-.672 1.5-1.5 0-3.59-3.582-6.5-8-6.5Z"
+                fill="currentColor"
+              />
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold tracking-tight text-gray-900">{{ props.currentUser.name }}</p>
+            <p class="truncate text-sm text-gray-500">{{ props.currentUser.username || "workspace-user" }}</p>
+          </div>
+        </div>
 
-      <div class="sidebar-footer">
-        <p><strong>{{ currentUser.name }}</strong></p>
-        <p>{{ currentUser.username || "workspace-user" }}</p>
-        <button class="ghost-btn" @click="emit('logout')">退出登录</button>
+        <button
+          type="button"
+          class="w-full rounded-full border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 transition-all duration-200 ease-in-out hover:-translate-y-0.5 hover:bg-gray-50 hover:shadow-sm active:scale-[0.98]"
+          @click="emit('logout')"
+        >
+          退出登录
+        </button>
       </div>
     </aside>
 
-    <section class="app-shell-content">
+    <section class="relative h-full flex-1 overflow-y-auto">
       <RouterView />
     </section>
   </div>
