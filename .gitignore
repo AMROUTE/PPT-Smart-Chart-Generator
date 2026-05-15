@@ -214,3 +214,6 @@ __marimo__/
 outputs/demo-e33c4f988a_illustration_slide_1.svg
 /outputs
 /data/uploads
+*.json
+/docs
+/graphify-out
