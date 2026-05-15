@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
 from backend.chart_generator import generate_chart
+from backend.insert_to_pptx import insert_chart_to_pptx
 from backend.ppt_parser import extract_slide_content
 from backend.schemas import AgentState, PipelineInput
 
@@ -39,6 +40,7 @@ def parse_ppt_node(state: dict[str, Any]) -> dict[str, Any]:
                 "title": table["title"],
                 "columns": table["columns"],
                 "rows": table["rows"],
+                "cell_matrix": table.get("cell_matrix", []),
             }
             for table in parsed.tables
         ]
@@ -51,6 +53,7 @@ def parse_ppt_node(state: dict[str, Any]) -> dict[str, Any]:
                 "title": "sample_table",
                 "columns": ["category", "value"],
                 "rows": [["Q1", 120], ["Q2", 180]],
+                "cell_matrix": [],
             }
         ]
         state["shapes"] = []
@@ -111,10 +114,23 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def save_pptx_node(state: dict[str, Any]) -> dict[str, Any]:
     ppt_path = Path(state["ppt_path"])
-    state["final_pptx_path"] = str(
-        ppt_path.with_name(f"{ppt_path.stem}_enhanced{ppt_path.suffix}")
-    )
-    return append_log(state, "PPT save placeholder completed.")
+    output_path = ppt_path.with_name(f"{ppt_path.stem}_enhanced{ppt_path.suffix}")
+    try:
+        inserted = insert_chart_to_pptx(
+            ppt_path=ppt_path,
+            chart_image_path=state["chart_image"],
+            slide_number=state["current_slide"],
+            chart_title=state.get("chart_spec", {}).get("title", f"Slide {state['current_slide']} Chart"),
+            chart_spec=state.get("chart_spec", {}),
+            shapes=state.get("shapes", []),
+            output_path=output_path,
+        )
+        state["final_pptx_path"] = inserted.output_path
+        state["insertion"] = inserted.to_dict()
+        return append_log(state, "PPT save completed with chart insertion.")
+    except Exception:
+        state["final_pptx_path"] = str(output_path)
+        return append_log(state, "PPT save fallback completed.")
 
 
 class FallbackCompiledGraph:

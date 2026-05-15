@@ -40,11 +40,65 @@ def dataframe_to_records(dataframe: pd.DataFrame) -> list[list[Any]]:
     return dataframe.where(pd.notnull(dataframe), None).values.tolist()
 
 
+def _normalized_cell_text(cell: Any) -> str:
+    text = cell.text.strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        return lines[0]
+    return text
+
+
+def _cell_merge_meta(cell: Any, row_index: int, col_index: int) -> dict[str, Any]:
+    return {
+        "row": row_index,
+        "col": col_index,
+        "text": _normalized_cell_text(cell),
+        "is_merge_origin": bool(getattr(cell, "is_merge_origin", False)),
+        "is_spanned": bool(getattr(cell, "is_spanned", False)),
+        "row_span": int(getattr(cell, "span_height", 1) or 1),
+        "col_span": int(getattr(cell, "span_width", 1) or 1),
+    }
+
+
+def extract_table_matrix(table: Any) -> list[list[dict[str, Any]]]:
+    matrix: list[list[dict[str, Any]]] = []
+    for row_index, row in enumerate(table.rows):
+        matrix.append(
+            [
+                _cell_merge_meta(cell, row_index, col_index)
+                for col_index, cell in enumerate(row.cells)
+            ]
+        )
+    return matrix
+
+
+def _resolve_visible_value(matrix: list[list[dict[str, Any]]], row_index: int, col_index: int) -> str:
+    cell = matrix[row_index][col_index]
+    if not cell["is_spanned"]:
+        return cell["text"]
+
+    for source_row in range(row_index, -1, -1):
+        for source_col in range(col_index, -1, -1):
+            source = matrix[source_row][source_col]
+            if not source["is_merge_origin"]:
+                continue
+
+            row_end = source_row + source["row_span"] - 1
+            col_end = source_col + source["col_span"] - 1
+            if source_row <= row_index <= row_end and source_col <= col_index <= col_end:
+                return source["text"]
+    return cell["text"]
+
+
 def table_to_dataframe(table: Any) -> pd.DataFrame:
     if pd is None:
         raise ModuleNotFoundError("pandas is required for table_to_dataframe.")
 
-    matrix = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+    raw_matrix = extract_table_matrix(table)
+    matrix = [
+        [_resolve_visible_value(raw_matrix, row_index, col_index) for col_index in range(len(row))]
+        for row_index, row in enumerate(raw_matrix)
+    ]
     if not matrix:
         return pd.DataFrame()
 
@@ -62,8 +116,7 @@ def table_to_dataframe(table: Any) -> pd.DataFrame:
 def extract_text_from_shape(shape: Any) -> str:
     if not getattr(shape, "has_text_frame", False):
         return ""
-    text = shape.text.strip()
-    return text
+    return shape.text.strip()
 
 
 def describe_shape(shape: Any, index: int) -> dict[str, Any]:
@@ -92,6 +145,7 @@ def extract_tables(slide: Any) -> list[dict[str, Any]]:
         if not getattr(shape, "has_table", False):
             continue
 
+        table_matrix = extract_table_matrix(shape.table)
         dataframe = table_to_dataframe(shape.table)
         tables.append(
             {
@@ -99,6 +153,7 @@ def extract_tables(slide: Any) -> list[dict[str, Any]]:
                 "columns": dataframe.columns.tolist(),
                 "rows": dataframe_to_records(dataframe),
                 "dataframe": dataframe,
+                "cell_matrix": table_matrix,
             }
         )
         table_index += 1
