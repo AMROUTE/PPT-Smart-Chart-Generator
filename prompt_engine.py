@@ -6,16 +6,16 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from rag_retriever import retrieve_similar_cases, format_cases_for_prompt
+from vector_rag import retrieve_similar_cases, format_cases_for_prompt
 
 load_dotenv()
 
-API_KEY = os.getenv("QWEN_API_KEY")
-BASE_URL = os.getenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", os.getenv("QWEN_MODEL", "qwen-plus"))
+API_KEY = os.getenv("OPENAI_API_KEY")
+BASE_URL = os.getenv("OPENAI_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen-plus")
 
 if not API_KEY:
-    raise ValueError("未读取到 QWEN_API_KEY，请检查 .env 文件。")
+    raise ValueError("未读取到 OPENAI_API_KEY，请检查 .env 文件。")
 
 client = OpenAI(
     api_key=API_KEY,
@@ -71,6 +71,13 @@ JSON 格式必须如下：
   "y": [],
   "reason": ""
 }}
+
+【边缘情况处理规则】
+1. 如果文本没有明确数字，可以根据语义生成合理的相对值用于演示。
+2. 如果文本同时包含多个意图，优先选择“核心表达目的”。
+3. 如果文本表达模糊（如“越来越好”“明显增加”），仍需判断最接近的意图。
+4. 如果文本是口语化表达，需要转换为标准语义理解。
+5. reason 中必须说明判断依据。
 
 【字段要求】
 - intent 必须是 comparison、trend、composition、distribution、correlation 之一。
