@@ -4,12 +4,13 @@ from collections import defaultdict
 
 from prompt_engine import semantic_parse
 from test_cases import test_cases
-
+from edge_cases import edge_cases
 
 def evaluate():
     os.makedirs("outputs", exist_ok=True)
 
-    total = len(test_cases)
+    all_cases = test_cases + edge_cases
+    total = len(all_cases)
     correct = 0
     rows = []
     error_by_label = defaultdict(int)
@@ -18,7 +19,7 @@ def evaluate():
     print("开始评估语义识别准确率")
     print("=" * 80)
 
-    for idx, case in enumerate(test_cases, start=1):
+    for idx, case in enumerate(all_cases, start=1):
         text = case["text"]
         true_label = case["label"]
 
