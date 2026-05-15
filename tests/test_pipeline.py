@@ -1,6 +1,10 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+
+os.environ["ENABLE_QWEN_API"] = "0"
+os.environ["DATABASE_PATH"] = str(Path(tempfile.gettempdir()) / "codex-test-app.db")
 
 try:
     from pptx import Presentation
@@ -13,25 +17,30 @@ except ModuleNotFoundError:
 
 from backend.app import create_app
 from backend.chart_generator import generate_chart
+from backend.database import authenticate_or_create_user, init_db
 from backend.insert_to_pptx import insert_chart_to_pptx
 from backend.pipeline import PIPELINE_NODES, export_pipeline_mermaid, run_pipeline
 from backend.ppt_parser import extract_slide_content, table_to_dataframe
 from backend.schemas import PipelineInput
-from backend.services import allowed_file, build_file_metadata, process_local_ppt
+from backend.services import (
+    allowed_file,
+    parse_presentation_slides,
+    build_slide_preview,
+    build_file_metadata,
+    build_health_payload,
+    extract_records_from_text,
+    normalize_chart_type_override,
+    normalize_image_model,
+    normalize_illustration_style,
+    path_to_asset_url,
+    process_demo_text,
+    process_local_ppt,
+)
 
 
 class PipelineTests(unittest.TestCase):
-    def test_pipeline_nodes_are_defined_for_week_one(self):
-        self.assertEqual(
-            PIPELINE_NODES,
-            [
-                "parse_ppt",
-                "semantic_analysis",
-                "generate_chart",
-                "generate_illustration",
-                "save_pptx",
-            ],
-        )
+    def test_pipeline_nodes_are_defined_for_week_two(self):
+        self.assertEqual(PIPELINE_NODES, ["parse_ppt", "semantic_analysis", "generate_chart", "generate_illustration", "save_pptx"])
 
     def test_mermaid_definition_contains_full_flow(self):
         mermaid = export_pipeline_mermaid()
@@ -39,14 +48,21 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("save_pptx", mermaid)
 
     def test_run_pipeline_returns_expected_placeholders(self):
-        result = run_pipeline(PipelineInput(ppt_path="demo.pptx", current_slide=2))
-        self.assertEqual(result["intent"]["chart_type"], "bar")
-        self.assertTrue(result["chart_image"].endswith("chart_slide_2.png"))
+        result = run_pipeline(PipelineInput(ppt_path="demo.pptx", current_slide=2, request_id="test-run"))
+        self.assertIn(result["intent"]["chart_type"], {"bar", "line", "pie", "scatter", "heatmap"})
+        self.assertIn("chart_slide_2", result["chart_image"])
         self.assertTrue(result["final_pptx_path"].endswith("demo_enhanced.pptx"))
-        self.assertGreaterEqual(len(result["logs"]), 5)
+        self.assertGreaterEqual(len(result["logs"]), 6)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["progress"], 100)
+        self.assertEqual(len(result["stage_history"]), 5)
 
 
 class ServiceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+
     def test_allowed_file_only_accepts_pptx(self):
         self.assertTrue(allowed_file("demo.pptx"))
         self.assertFalse(allowed_file("demo.pdf"))
@@ -58,15 +74,91 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(metadata["suffix"], ".pptx")
 
     def test_process_local_ppt_runs_pipeline(self):
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(b"placeholder")
-            tmp_path = Path(tmp.name)
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-source.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.shapes.add_textbox(1000000, 1000000, 4000000, 600000).text_frame.text = "Revenue trend analysis"
+        table = slide.shapes.add_table(4, 2, 1000000, 1800000, 4000000, 2000000).table
+        table.cell(0, 0).text = "Quarter"
+        table.cell(0, 1).text = "Revenue"
+        table.cell(1, 0).text = "Q1"
+        table.cell(1, 1).text = "120"
+        table.cell(2, 0).text = "Q2"
+        table.cell(2, 1).text = "150"
+        table.cell(3, 0).text = "Q3"
+        table.cell(3, 1).text = "180"
+        prs.save(tmp_path)
         try:
-            payload = process_local_ppt(tmp_path, 1)
+            payload = process_local_ppt(tmp_path, 1, chart_type_override="line", illustration_style="tech", image_model="flux")
             self.assertEqual(payload["file"]["slide_number"], 1)
             self.assertIn("pipeline", payload)
+            self.assertIn("chart_image_url", payload["pipeline"])
+            self.assertTrue(Path(payload["pipeline"]["final_pptx_path"]).exists())
         finally:
             tmp_path.unlink(missing_ok=True)
+
+    def test_build_slide_preview_returns_preview_asset(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-preview.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.shapes.add_textbox(1000000, 1000000, 5000000, 1200000).text_frame.text = "First slide preview test"
+        prs.save(tmp_path)
+        try:
+            payload = build_slide_preview(1, file_path=tmp_path)
+            self.assertEqual(payload["slide_number"], 1)
+            self.assertEqual(payload["slide_count"], 1)
+            self.assertTrue(Path(payload["preview_image"]).exists())
+            self.assertTrue(payload["preview_image_url"].startswith("/assets/outputs/"))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_parse_presentation_slides_returns_outline(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-outline.pptx"
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(1000000, 1000000, 5000000, 1200000).text_frame.text = "Slide one"
+        prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_textbox(1000000, 1000000, 5000000, 1200000).text_frame.text = "Slide two"
+        prs.save(tmp_path)
+        try:
+            payload = parse_presentation_slides(file_path=tmp_path)
+            self.assertEqual(payload["slide_count"], 2)
+            self.assertEqual(len(payload["slides"]), 2)
+            self.assertEqual(payload["slides"][0]["slide_number"], 1)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_extract_records_from_text_supports_demo_mode(self):
+        records = extract_records_from_text("Revenue: 120\nProfit: 45")
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["category"], "Revenue")
+
+    def test_process_demo_text_returns_preview_assets(self):
+        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", illustration_style="business", image_model="wanx")
+        self.assertEqual(payload["pipeline"]["status"], "completed")
+        self.assertTrue(payload["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))
+        self.assertEqual(payload["pipeline"]["intent"]["chart_type"], "pie")
+        self.assertIn("clip_score", payload["pipeline"]["illustration_meta"])
+        self.assertIn(payload["pipeline"]["illustration_meta"]["generation_source"], {"local", "wanx", "flux"})
+
+    def test_process_demo_text_falls_back_when_remote_image_model_is_unavailable(self):
+        payload = process_demo_text("Revenue: 120\nCost: 80\nProfit: 40", illustration_style="tech", image_model="wanx")
+        self.assertEqual(payload["pipeline"]["status"], "completed")
+        self.assertEqual(payload["pipeline"]["illustration_meta"]["generation_source"], "local")
+        self.assertTrue(Path(payload["pipeline"]["illustration_image"]).exists())
+
+    def test_path_to_asset_url_maps_output_files(self):
+        self.assertEqual(path_to_asset_url("outputs/demo.png"), "/assets/outputs/demo.png")
+
+    def test_normalizers_accept_known_values(self):
+        self.assertEqual(normalize_chart_type_override("line"), "line")
+        self.assertEqual(normalize_chart_type_override("auto"), "")
+        self.assertEqual(normalize_illustration_style("tech"), "tech")
+        self.assertEqual(normalize_image_model("wanx"), "wanx")
 
 
 @unittest.skipUnless(Presentation is not None, "python-pptx is not installed")
@@ -74,21 +166,9 @@ class PptModuleTests(unittest.TestCase):
     def _build_sample_ppt(self) -> Path:
         presentation = Presentation()
         slide = presentation.slides.add_slide(presentation.slide_layouts[6])
-
-        title = slide.shapes.add_textbox(Inches(0.5), Inches(0.4), Inches(4.5), Inches(0.6))
-        title.text_frame.text = "Quarterly Revenue"
-
-        note = slide.shapes.add_textbox(Inches(0.5), Inches(1.1), Inches(5.0), Inches(0.8))
-        note.text_frame.text = "Summary slide for chart insertion testing."
-
-        slide.shapes.add_shape(
-            MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
-            Inches(6.2),
-            Inches(0.6),
-            Inches(2.0),
-            Inches(0.8),
-        ).text_frame.text = "Highlight"
-
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.4), Inches(4.5), Inches(0.6)).text_frame.text = "Quarterly Revenue"
+        slide.shapes.add_textbox(Inches(0.5), Inches(1.1), Inches(5.0), Inches(0.8)).text_frame.text = "Summary slide for chart insertion testing."
+        slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(6.2), Inches(0.6), Inches(2.0), Inches(0.8)).text_frame.text = "Highlight"
         table = slide.shapes.add_table(4, 3, Inches(0.5), Inches(2.0), Inches(5.5), Inches(2.0)).table
         table.cell(0, 0).text = "month"
         table.cell(0, 1).text = "sales"
@@ -102,7 +182,6 @@ class PptModuleTests(unittest.TestCase):
         table.cell(3, 0).text = "Mar"
         table.cell(3, 1).text = "180"
         table.cell(3, 2).text = "40"
-
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             presentation.save(tmp.name)
             return Path(tmp.name)
@@ -111,7 +190,6 @@ class PptModuleTests(unittest.TestCase):
         presentation = Presentation()
         slide = presentation.slides.add_slide(presentation.slide_layouts[6])
         table = slide.shapes.add_table(4, 3, Inches(0.5), Inches(1.0), Inches(5.5), Inches(2.0)).table
-
         table.cell(0, 0).text = "Region"
         table.cell(0, 1).text = "Revenue"
         table.cell(0, 2).text = "Profit"
@@ -124,9 +202,7 @@ class PptModuleTests(unittest.TestCase):
         table.cell(3, 0).text = "Total"
         table.cell(3, 1).text = "270"
         table.cell(3, 2).text = "55"
-
         table.cell(1, 0).merge(table.cell(2, 0))
-
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             presentation.save(tmp.name)
             return Path(tmp.name)
@@ -153,15 +229,7 @@ class PptModuleTests(unittest.TestCase):
             table = parsed.tables[0]
             records = [dict(zip(table["columns"], row)) for row in table["rows"]]
             chart = generate_chart(records, "bar", output_path=output_chart, title="Revenue Overview")
-            result = insert_chart_to_pptx(
-                ppt_path=ppt_path,
-                chart_image_path=chart.output_path,
-                slide_number=1,
-                chart_title=chart.title,
-                chart_spec=chart.to_dict(),
-                shapes=parsed.shapes,
-                output_path=output_ppt,
-            )
+            result = insert_chart_to_pptx(ppt_path=ppt_path, chart_image_path=chart.output_path, slide_number=1, chart_title=chart.title, chart_spec=chart.to_dict(), shapes=parsed.shapes, output_path=output_ppt)
             self.assertTrue(Path(result.output_path).exists())
             self.assertTrue(result.replaced_table)
             enhanced = Presentation(result.output_path)
@@ -180,6 +248,23 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/health", route_paths)
         self.assertIn("/api/pipeline", route_paths)
         self.assertIn("/api/process", route_paths)
+        self.assertIn("/api/demo-chart", route_paths)
+        self.assertIn("/api/slide-preview", route_paths)
+        self.assertIn("/api/parse-slides", route_paths)
+        self.assertIn("/api/auth/login", route_paths)
+        self.assertIn("/api/jobs", route_paths)
+
+    def test_health_payload_exposes_image_provider_flags(self):
+        payload = build_health_payload()
+        self.assertIn("wanx_enabled", payload)
+        self.assertIn("flux_enabled", payload)
+        self.assertEqual(payload["database_engine"], "sqlite")
+
+    def test_authenticate_or_create_user_persists_user(self):
+        user = authenticate_or_create_user("codex-demo", "demo123")
+        self.assertEqual(user["username"], "codex-demo")
+        same_user = authenticate_or_create_user("codex-demo", "demo123")
+        self.assertEqual(user["id"], same_user["id"])
 
 
 if __name__ == "__main__":
