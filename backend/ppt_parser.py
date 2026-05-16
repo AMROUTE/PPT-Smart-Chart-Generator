@@ -218,9 +218,9 @@ def extract_shapes(slide: Any) -> list[dict[str, Any]]:
 
 def infer_table_from_text_blocks(text_blocks: list[str]) -> list[dict[str, Any]]:
     joined = "\n".join(text_blocks)
-    matches = re.findall(r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:：]\s*(-?\d+(?:\.\d+)?)", joined)
+    matches = re.findall(r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:\s]*(-?\d+(?:\.\d+)?)", joined)
     if not matches:
-        matches = re.findall(r"((?:20\d{2}|Q[1-4]|[1-9]|1[0-2]月)\s*[,:-]?\s*(-?\d+(?:\.\d+)?))", joined)
+        matches = re.findall(r"((?:20\d{2}|Q[1-4]|[1-9]|1[0-2])\s*[,:-]?\s*)(-?\d+(?:\.\d+)?)", joined)
         matches = [(label, value) for label, value in matches]
     if not matches:
         return []
@@ -228,49 +228,64 @@ def infer_table_from_text_blocks(text_blocks: list[str]) -> list[dict[str, Any]]
     return [{"title": "text_inferred_table", "columns": ["category", "value"], "rows": rows, "merge_hints": [], "raw_matrix": [["category", "value"], *rows], "cell_matrix": []}]
 
 
-def extract_slide_content(ppt_path: str | Path, slide_number: int) -> ParsedSlideContent:
+def _ensure_presentation_dependency() -> None:
     if Presentation is None:
-        raise ModuleNotFoundError("python-pptx is required for extract_slide_content.")
+        raise ModuleNotFoundError("python-pptx is required for PPT parsing.")
 
+
+def _load_presentation(ppt_path: str | Path) -> Any:
+    _ensure_presentation_dependency()
     presentation_path = Path(ppt_path)
     if not presentation_path.exists():
         raise FileNotFoundError(f"PPT file not found: {presentation_path}")
+    return Presentation(str(presentation_path))
 
-    presentation = Presentation(str(presentation_path))
+
+def _validate_slide_number(presentation: Any, slide_number: int) -> None:
     if slide_number < 1 or slide_number > len(presentation.slides):
         raise ValueError(f"Slide number {slide_number} is out of range. This PPT has {len(presentation.slides)} slides.")
 
-    slide = presentation.slides[slide_number - 1]
+
+def _build_parsed_slide(slide: Any, slide_number: int) -> ParsedSlideContent:
     tables = extract_tables(slide)
     shapes = extract_shapes(slide)
     text_blocks = [shape["text"] for shape in shapes if shape.get("text")]
     if not tables:
         tables = infer_table_from_text_blocks(text_blocks)
-
     return ParsedSlideContent(slide_number=slide_number, text_content="\n".join(text_blocks), tables=tables, shapes=shapes)
 
 
+def extract_slide_content_from_presentation(presentation: Any, slide_number: int) -> ParsedSlideContent:
+    _validate_slide_number(presentation, slide_number)
+    return _build_parsed_slide(presentation.slides[slide_number - 1], slide_number)
+
+
+def extract_multiple_slide_contents(ppt_path: str | Path, slide_numbers: list[int] | None = None) -> dict[int, ParsedSlideContent]:
+    presentation = _load_presentation(ppt_path)
+    total_slides = len(presentation.slides)
+    requested = slide_numbers or list(range(1, total_slides + 1))
+    parsed: dict[int, ParsedSlideContent] = {}
+    for slide_number in requested:
+        _validate_slide_number(presentation, slide_number)
+        parsed[slide_number] = _build_parsed_slide(presentation.slides[slide_number - 1], slide_number)
+    return parsed
+
+
+def extract_slide_content(ppt_path: str | Path, slide_number: int) -> ParsedSlideContent:
+    presentation = _load_presentation(ppt_path)
+    return extract_slide_content_from_presentation(presentation, slide_number)
+
+
 def get_slide_count(ppt_path: str | Path) -> int:
-    if Presentation is None:
-        raise ModuleNotFoundError("python-pptx is required for get_slide_count.")
-    presentation_path = Path(ppt_path)
-    presentation = Presentation(str(presentation_path))
+    presentation = _load_presentation(ppt_path)
     return len(presentation.slides)
 
 
 def render_slide_preview(ppt_path: str | Path, slide_number: int, output_path: str | Path) -> SlidePreview:
-    if Presentation is None:
-        raise ModuleNotFoundError("python-pptx is required for render_slide_preview.")
+    presentation = _load_presentation(ppt_path)
+    _validate_slide_number(presentation, slide_number)
 
-    presentation_path = Path(ppt_path)
-    if not presentation_path.exists():
-        raise FileNotFoundError(f"PPT file not found: {presentation_path}")
-
-    presentation = Presentation(str(presentation_path))
     slide_count = len(presentation.slides)
-    if slide_number < 1 or slide_number > slide_count:
-        raise ValueError(f"Slide number {slide_number} is out of range. This PPT has {slide_count} slides.")
-
     slide = presentation.slides[slide_number - 1]
     slide_width = int(presentation.slide_width) or 1
     slide_height = int(presentation.slide_height) or 1
@@ -328,20 +343,17 @@ def render_slide_preview(ppt_path: str | Path, slide_number: int, output_path: s
 
 
 def parse_presentation_outline(ppt_path: str | Path) -> list[SlideOutlineItem]:
-    if Presentation is None:
-        raise ModuleNotFoundError("python-pptx is required for parse_presentation_outline.")
-
-    presentation_path = Path(ppt_path)
-    if not presentation_path.exists():
-        raise FileNotFoundError(f"PPT file not found: {presentation_path}")
-
-    presentation = Presentation(str(presentation_path))
+    presentation = _load_presentation(ppt_path)
     items: list[SlideOutlineItem] = []
-    for slide_index, slide in enumerate(presentation.slides, start=1):
-        tables = extract_tables(slide)
-        shapes = extract_shapes(slide)
-        text_blocks = [shape["text"] for shape in shapes if shape.get("text")]
-        if not tables:
-            tables = infer_table_from_text_blocks(text_blocks)
-        items.append(SlideOutlineItem(slide_number=slide_index, text_content="\n".join(text_blocks)[:600], table_count=len(tables), shape_count=len(shapes), table_titles=[table.get("title", f"table_{table_index + 1}") for table_index, table in enumerate(tables)]))
+    for slide_index in range(1, len(presentation.slides) + 1):
+        parsed = extract_slide_content_from_presentation(presentation, slide_index)
+        items.append(
+            SlideOutlineItem(
+                slide_number=slide_index,
+                text_content=parsed.text_content[:600],
+                table_count=len(parsed.tables),
+                shape_count=len(parsed.shapes),
+                table_titles=[table.get("title", f"table_{table_index + 1}") for table_index, table in enumerate(parsed.tables)],
+            )
+        )
     return items

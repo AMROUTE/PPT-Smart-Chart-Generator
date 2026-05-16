@@ -326,15 +326,23 @@ def save_pptx_node(state: dict[str, Any]) -> dict[str, Any]:
     ppt_path = Path(state["ppt_path"])
     output_dir = Path(get_settings().output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    final_path = output_dir / f"{ppt_path.stem}_enhanced{ppt_path.suffix}"
+    final_path = Path(state.get("output_ppt_path") or (output_dir / f"{ppt_path.stem}_enhanced{ppt_path.suffix}"))
     if ppt_path.exists():
         summary = state["intent"].get("reason") or "Auto-generated result"
+        save_target = final_path
+        if ppt_path.resolve() == final_path.resolve():
+            save_target = final_path.with_name(f"{final_path.stem}_tmp{final_path.suffix}")
         try:
-            insert_generated_assets(ppt_path=ppt_path, output_path=final_path, slide_number=state["current_slide"], chart_path=state.get("chart_image") or None, illustration_path=state.get("illustration_image") or None, title=f"Slide {state['current_slide']} enhanced result", subtitle=summary, intent=state.get("intent", {}), shapes=state.get("shapes", []))
+            insert_generated_assets(ppt_path=ppt_path, output_path=save_target, slide_number=state["current_slide"], chart_path=state.get("chart_image") or None, illustration_path=state.get("illustration_image") or None, title=f"Slide {state['current_slide']} enhanced result", subtitle=summary, intent=state.get("intent", {}), shapes=state.get("shapes", []))
+            if save_target != final_path:
+                shutil.move(str(save_target), str(final_path))
             state["final_pptx_path"] = str(final_path)
             return append_log(state, "Enhanced PPT saved with inserted chart assets.")
         except Exception as exc:
-            shutil.copyfile(ppt_path, final_path)
+            if save_target != final_path and save_target.exists():
+                save_target.unlink(missing_ok=True)
+            if ppt_path.resolve() != final_path.resolve():
+                shutil.copyfile(ppt_path, final_path)
             state["final_pptx_path"] = str(final_path)
             append_log(state, f"PPT writeback fallback enabled: {exc}", "warning")
             return append_log(state, "Enhanced PPT fallback copy saved.")
@@ -430,3 +438,4 @@ def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
 
 def export_pipeline_mermaid() -> str:
     return get_pipeline_app().get_graph().draw_mermaid()
+

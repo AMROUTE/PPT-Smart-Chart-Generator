@@ -8,18 +8,19 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_settings
+from backend.database import authenticate_or_create_user, init_db, list_recent_jobs
 from backend.services import (
     allowed_file,
-    build_slide_preview,
     build_health_payload,
+    build_slide_preview,
     ensure_output_dir,
     ensure_upload_dir,
     parse_presentation_slides,
-    process_local_ppt,
     process_demo_text,
+    process_local_ppt,
+    process_local_ppt_batch,
     save_upload,
 )
-from backend.database import authenticate_or_create_user, init_db, list_recent_jobs
 
 
 def create_app() -> FastAPI:
@@ -99,6 +100,43 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Pipeline processing failed: {exc}") from exc
+
+    @app.post("/api/process-batch")
+    async def process_upload_batch(
+        file: UploadFile = File(...),
+        slide_numbers: str = Form(""),
+        semantic_mode: str = Form("local"),
+        chart_type_override: str = Form(""),
+        illustration_style: str = Form("auto"),
+        image_model: str = Form("local"),
+        custom_qwen_api_key: str = Form(""),
+        custom_qwen_model: str = Form(""),
+        custom_wanx_api_key: str = Form(""),
+        custom_flux_api_key: str = Form(""),
+    ) -> JSONResponse:
+        if not file.filename or not allowed_file(file.filename):
+            raise HTTPException(status_code=400, detail="Please upload a .pptx file.")
+
+        parsed_slide_numbers = [int(item.strip()) for item in slide_numbers.split(",") if item.strip()] if slide_numbers.strip() else None
+        temp_path = save_upload(file.filename, await file.read())
+        try:
+            payload = process_local_ppt_batch(
+                temp_path,
+                parsed_slide_numbers,
+                semantic_mode=semantic_mode,
+                chart_type_override=chart_type_override,
+                illustration_style=illustration_style,
+                image_model=image_model,
+                custom_qwen_api_key=custom_qwen_api_key,
+                custom_qwen_model=custom_qwen_model,
+                custom_wanx_api_key=custom_wanx_api_key,
+                custom_flux_api_key=custom_flux_api_key,
+            )
+            return JSONResponse(payload)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Batch pipeline processing failed: {exc}") from exc
 
     @app.post("/api/demo-chart")
     async def demo_chart(

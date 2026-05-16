@@ -7,10 +7,12 @@ os.environ["ENABLE_QWEN_API"] = "0"
 os.environ["DATABASE_PATH"] = str(Path(tempfile.gettempdir()) / "codex-test-app.db")
 
 try:
+    from PIL import Image
     from pptx import Presentation
     from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
     from pptx.util import Inches
 except ModuleNotFoundError:
+    Image = None
     Presentation = None
     MSO_AUTO_SHAPE_TYPE = None
     Inches = None
@@ -24,17 +26,18 @@ from backend.ppt_parser import extract_slide_content, table_to_dataframe
 from backend.schemas import PipelineInput
 from backend.services import (
     allowed_file,
-    parse_presentation_slides,
-    build_slide_preview,
     build_file_metadata,
     build_health_payload,
+    build_slide_preview,
     extract_records_from_text,
     normalize_chart_type_override,
     normalize_image_model,
     normalize_illustration_style,
+    parse_presentation_slides,
     path_to_asset_url,
     process_demo_text,
     process_local_ppt,
+    process_local_ppt_batch,
 )
 
 
@@ -96,6 +99,33 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("pipeline", payload)
             self.assertIn("chart_image_url", payload["pipeline"])
             self.assertTrue(Path(payload["pipeline"]["final_pptx_path"]).exists())
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_process_local_ppt_batch_reuses_single_batch_output(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-batch-source.pptx"
+        prs = Presentation()
+        for title, values in [("Revenue trend", [120, 150, 180]), ("Market share", [35, 25, 40])]:
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_textbox(1000000, 1000000, 4000000, 600000).text_frame.text = title
+            table = slide.shapes.add_table(4, 2, 1000000, 1800000, 4000000, 2000000).table
+            table.cell(0, 0).text = "Label"
+            table.cell(0, 1).text = "Value"
+            table.cell(1, 0).text = "A"
+            table.cell(1, 1).text = str(values[0])
+            table.cell(2, 0).text = "B"
+            table.cell(2, 1).text = str(values[1])
+            table.cell(3, 0).text = "C"
+            table.cell(3, 1).text = str(values[2])
+        prs.save(tmp_path)
+        try:
+            payload = process_local_ppt_batch(tmp_path, [1, 2], illustration_style="tech")
+            self.assertEqual(payload["processed_count"], 2)
+            self.assertEqual(payload["slide_numbers"], [1, 2])
+            self.assertTrue(Path(payload["final_pptx_path"]).exists())
+            self.assertTrue(all(slide["final_pptx_path"] == payload["final_pptx_path"] for slide in payload["slides"]))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -241,6 +271,28 @@ class PptModuleTests(unittest.TestCase):
             output_ppt.unlink(missing_ok=True)
 
 
+class ChartThemeTests(unittest.TestCase):
+    def test_generate_chart_uses_tech_theme_background(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        output_chart = Path(tempfile.gettempdir()) / "tech_theme_chart.png"
+        try:
+            chart = generate_chart(
+                [
+                    {"month": "Jan", "sales": 120},
+                    {"month": "Feb", "sales": 150},
+                    {"month": "Mar", "sales": 180},
+                ],
+                "bar",
+                output_path=output_chart,
+                title="Theme Check",
+            )
+            image = Image.open(chart.output_path)
+            self.assertEqual(image.getpixel((10, 10)), (7, 17, 31))
+        finally:
+            output_chart.unlink(missing_ok=True)
+
+
 class AppTests(unittest.TestCase):
     def test_create_app_registers_expected_routes(self):
         app = create_app()
@@ -248,6 +300,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/health", route_paths)
         self.assertIn("/api/pipeline", route_paths)
         self.assertIn("/api/process", route_paths)
+        self.assertIn("/api/process-batch", route_paths)
         self.assertIn("/api/demo-chart", route_paths)
         self.assertIn("/api/slide-preview", route_paths)
         self.assertIn("/api/parse-slides", route_paths)
@@ -258,6 +311,7 @@ class AppTests(unittest.TestCase):
         payload = build_health_payload()
         self.assertIn("wanx_enabled", payload)
         self.assertIn("flux_enabled", payload)
+        self.assertIn("batch-processing", payload["features"])
         self.assertEqual(payload["database_engine"], "sqlite")
 
     def test_authenticate_or_create_user_persists_user(self):

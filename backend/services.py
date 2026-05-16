@@ -108,6 +108,37 @@ def normalize_image_model(image_model: str | None) -> str:
     return normalized if normalized in allowed else "local"
 
 
+def _normalize_slide_numbers(slide_numbers: list[int] | None, slide_count: int) -> list[int]:
+    requested = slide_numbers or list(range(1, slide_count + 1))
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for slide_number in requested:
+        value = int(slide_number)
+        if value < 1 or value > slide_count:
+            raise ValueError(f"Slide number {value} is out of range. This PPT has {slide_count} slides.")
+        if value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    if not deduped:
+        raise ValueError("At least one slide number is required for batch processing.")
+    return deduped
+
+
+def _record_job(result: dict[str, Any], upload_token: str, source_type: str, slide_number: int, semantic_mode: str, chart_type_override: str, illustration_style: str, image_model: str) -> None:
+    record_processing_job(
+        request_id=result["request_id"],
+        upload_token=upload_token,
+        source_type=source_type,
+        slide_number=slide_number,
+        semantic_mode=semantic_mode,
+        chart_type_override=chart_type_override,
+        illustration_style=illustration_style,
+        image_model=image_model,
+        status=result.get("status", "completed"),
+        final_pptx_path=result.get("final_pptx_path", ""),
+    )
+
+
 def process_local_ppt(
     file_path: str | Path,
     slide_number: int,
@@ -148,18 +179,7 @@ def process_local_ppt(
             custom_flux_api_key=custom_flux_api_key.strip(),
         )
     )
-    record_processing_job(
-        request_id=result["request_id"],
-        upload_token=ppt_path.name,
-        source_type="ppt",
-        slide_number=slide_number,
-        semantic_mode=resolved_mode,
-        chart_type_override=resolved_chart_type,
-        illustration_style=resolved_style,
-        image_model=resolved_model,
-        status=result.get("status", "completed"),
-        final_pptx_path=result.get("final_pptx_path", ""),
-    )
+    _record_job(result, ppt_path.name, "ppt", slide_number, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
     enrich_pipeline_assets(result)
     return {
         "message": "Pipeline completed successfully.",
@@ -172,9 +192,98 @@ def process_local_ppt(
     }
 
 
+def process_local_ppt_batch(
+    file_path: str | Path,
+    slide_numbers: list[int] | None = None,
+    semantic_mode: str = "local",
+    chart_type_override: str = "",
+    illustration_style: str = "auto",
+    image_model: str = "local",
+    custom_qwen_api_key: str = "",
+    custom_qwen_model: str = "",
+    custom_wanx_api_key: str = "",
+    custom_flux_api_key: str = "",
+) -> dict[str, Any]:
+    from backend.pipeline import run_pipeline
+    from backend.ppt_parser import extract_multiple_slide_contents, get_slide_count
+
+    ppt_path = Path(file_path)
+    if not ppt_path.exists():
+        raise FileNotFoundError(f"PPT file not found: {ppt_path}")
+    if not allowed_file(ppt_path.name):
+        raise ValueError("Only .pptx files are supported.")
+
+    slide_count = get_slide_count(ppt_path)
+    target_slides = _normalize_slide_numbers(slide_numbers, slide_count)
+    resolved_mode = normalize_semantic_mode(semantic_mode)
+    resolved_chart_type = normalize_chart_type_override(chart_type_override)
+    resolved_style = normalize_illustration_style(illustration_style)
+    resolved_model = normalize_image_model(image_model)
+    preloaded = extract_multiple_slide_contents(ppt_path, target_slides)
+    batch_output_path = ensure_output_dir() / f"{ppt_path.stem}_batch_enhanced{ppt_path.suffix}"
+
+    current_source = ppt_path
+    slide_results: list[dict[str, Any]] = []
+    for slide_number in target_slides:
+        parsed = preloaded[slide_number]
+        result = run_pipeline(
+            {
+                "request_id": next_request_id("batch"),
+                "ppt_path": str(current_source),
+                "current_slide": slide_number,
+                "semantic_mode": resolved_mode,
+                "chart_type_override": resolved_chart_type,
+                "illustration_style": resolved_style,
+                "image_model": resolved_model,
+                "custom_qwen_api_key": custom_qwen_api_key.strip(),
+                "custom_qwen_model": custom_qwen_model.strip(),
+                "custom_wanx_api_key": custom_wanx_api_key.strip(),
+                "custom_flux_api_key": custom_flux_api_key.strip(),
+                "text_content": parsed.text_content,
+                "extracted_tables": [
+                    {
+                        "title": table["title"],
+                        "columns": table["columns"],
+                        "rows": table["rows"],
+                        "cell_matrix": table.get("cell_matrix", []),
+                        "merge_hints": table.get("merge_hints", []),
+                        "raw_matrix": table.get("raw_matrix", []),
+                    }
+                    for table in parsed.tables
+                ],
+                "shapes": parsed.shapes,
+                "output_ppt_path": str(batch_output_path),
+                "logs": [],
+                "status": "pending",
+                "progress": 0,
+                "retry_counts": {},
+                "stage_history": [],
+            }
+        )
+        _record_job(result, ppt_path.name, "ppt-batch", slide_number, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
+        enrich_pipeline_assets(result)
+        slide_results.append(result)
+        current_source = Path(result["final_pptx_path"])
+
+    return {
+        "message": "Batch pipeline completed successfully.",
+        "file": build_file_metadata(ppt_path, target_slides[0]),
+        "slide_numbers": target_slides,
+        "slide_count": slide_count,
+        "processed_count": len(slide_results),
+        "semantic_mode": resolved_mode,
+        "chart_type_override": resolved_chart_type,
+        "illustration_style": resolved_style,
+        "image_model": resolved_model,
+        "final_pptx_path": str(batch_output_path),
+        "final_pptx_url": path_to_asset_url(batch_output_path),
+        "slides": slide_results,
+    }
+
+
 def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
     matches = re.findall(
-        r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:：]\s*(\d+(?:\.\d+)?)",
+        r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:\s]*(\d+(?:\.\d+)?)",
         source_text,
     )
     records = [{"category": label.strip(), "value": float(value)} for label, value in matches]
@@ -182,7 +291,7 @@ def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
         return records
 
     trend_matches = re.findall(
-        r"((?:20\d{2}|Q[1-4]|一季度|二季度|三季度|四季度|1月|2月|3月|4月|5月|6月|7月|8月|9月|10月|11月|12月))\s*[：:,-]?\s*(\d+(?:\.\d+)?)",
+        r"((?:20\d{2}|Q[1-4]|[A-Za-z]{3}|\d{1,2})\s*[,-]?\s*(\d+(?:\.\d+)?))",
         source_text,
     )
     if trend_matches:
@@ -243,18 +352,7 @@ def process_demo_text(
             "stage_history": [],
         }
     )
-    record_processing_job(
-        request_id=request_id,
-        upload_token="demo",
-        source_type="demo",
-        slide_number=1,
-        semantic_mode=resolved_mode,
-        chart_type_override=resolved_chart_type,
-        illustration_style=resolved_style,
-        image_model=resolved_model,
-        status=result.get("status", "completed"),
-        final_pptx_path=result.get("final_pptx_path", ""),
-    )
+    _record_job(result, "demo", "demo", 1, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
     enrich_pipeline_assets(result)
     return {
         "message": "Text-to-chart demo completed successfully.",
@@ -366,6 +464,8 @@ def build_health_payload() -> dict[str, Any]:
             "chart-override",
             "style-selection",
             "sqlite-database",
+            "tech-chart-theme",
+            "batch-processing",
         ],
         **database_payload,
     }

@@ -19,11 +19,37 @@ SUPPORTED_CHART_TYPES = (
 )
 
 CANVAS_SIZE = (1200, 720)
-PLOT_BOUNDS = (120, 140, 1040, 560)
-BACKGROUND = "#ffffff"
-TEXT = "#102033"
-GRID = "#d8e5f2"
-SERIES_COLORS = ["#2563eb", "#0ea5e9", "#22c55e", "#f59e0b", "#ef4444"]
+PLOT_BOUNDS = (120, 160, 1040, 560)
+
+
+@dataclass(frozen=True)
+class ChartTheme:
+    background: str
+    panel: str
+    title: str
+    subtitle: str
+    axis: str
+    grid: str
+    frame: str
+    series_colors: list[str]
+    area_fills: list[str]
+    heatmap_start: tuple[int, int, int]
+    heatmap_end: tuple[int, int, int]
+
+
+TECH_THEME = ChartTheme(
+    background="#07111f",
+    panel="#0d1b2a",
+    title="#eef6ff",
+    subtitle="#9dc8ff",
+    axis="#d9ecff",
+    grid="#214463",
+    frame="#16304b",
+    series_colors=["#45c7ff", "#4f8cff", "#2ee6a6", "#ffd166", "#ff7a90"],
+    area_fills=["#123554", "#153f69", "#124e45"],
+    heatmap_start=(21, 43, 67),
+    heatmap_end=(69, 199, 255),
+)
 
 
 @dataclass
@@ -118,25 +144,33 @@ def _extract_series(records: list[dict[str, Any]], x_column: str | None, y_colum
     return labels, series_values
 
 
-def _new_canvas(title: str) -> tuple[Image.Image, ImageDraw.ImageDraw, ImageFont.ImageFont, ImageFont.ImageFont]:
-    image = Image.new("RGB", CANVAS_SIZE, BACKGROUND)
+def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    return right - left, bottom - top
+
+
+def _new_canvas(title: str, theme: ChartTheme) -> tuple[Image.Image, ImageDraw.ImageDraw, ImageFont.ImageFont, ImageFont.ImageFont]:
+    image = Image.new("RGB", CANVAS_SIZE, theme.background)
     draw = ImageDraw.Draw(image)
     title_font = ImageFont.load_default()
     body_font = ImageFont.load_default()
-    draw.text((120, 70), title, fill=TEXT, font=title_font)
+    draw.rounded_rectangle((32, 32, CANVAS_SIZE[0] - 32, CANVAS_SIZE[1] - 32), radius=28, fill=theme.panel, outline=theme.frame, width=3)
+    draw.rounded_rectangle((80, 110, 1080, 610), radius=24, outline=theme.frame, width=2)
+    draw.text((120, 70), title, fill=theme.title, font=title_font)
+    draw.text((120, 92), "Tech Theme Dashboard", fill=theme.subtitle, font=body_font)
     return image, draw, title_font, body_font
 
 
-def _draw_axes(draw: ImageDraw.ImageDraw) -> None:
+def _draw_axes(draw: ImageDraw.ImageDraw, theme: ChartTheme) -> None:
     left, top, right, bottom = PLOT_BOUNDS
-    draw.line((left, top, left, bottom), fill=TEXT, width=3)
-    draw.line((left, bottom, right, bottom), fill=TEXT, width=3)
+    draw.line((left, top, left, bottom), fill=theme.axis, width=3)
+    draw.line((left, bottom, right, bottom), fill=theme.axis, width=3)
     for index in range(1, 5):
         y = top + (bottom - top) * index / 5
-        draw.line((left, y, right, y), fill=GRID, width=1)
+        draw.line((left, y, right, y), fill=theme.grid, width=1)
 
 
-def _label_x_axis(draw: ImageDraw.ImageDraw, labels: list[str], font: ImageFont.ImageFont) -> list[float]:
+def _label_x_axis(draw: ImageDraw.ImageDraw, labels: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> list[float]:
     left, _, right, bottom = PLOT_BOUNDS
     count = max(len(labels), 1)
     step = (right - left) / count
@@ -144,7 +178,9 @@ def _label_x_axis(draw: ImageDraw.ImageDraw, labels: list[str], font: ImageFont.
     for index, label in enumerate(labels):
         center = left + step * (index + 0.5)
         centers.append(center)
-        draw.text((center - 18, bottom + 16), label[:8], fill=TEXT, font=font)
+        label_text = label[:10]
+        width, _ = _text_size(draw, label_text, font)
+        draw.text((center - width / 2, bottom + 16), label_text, fill=theme.axis, font=font)
     return centers
 
 
@@ -164,15 +200,28 @@ def _value_to_y(value: float, minimum: float, maximum: float) -> float:
     return bottom - normalized * (bottom - top - 20)
 
 
-def _plot_bar(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], font: ImageFont.ImageFont) -> None:
-    _draw_axes(draw)
-    centers = _label_x_axis(draw, labels, font)
+def _draw_chart_legend(draw: ImageDraw.ImageDraw, labels: list[str], theme: ChartTheme, font: ImageFont.ImageFont) -> None:
+    if not labels:
+        return
+    x = 840
+    y = 118
+    for index, label in enumerate(labels[:3]):
+        color = theme.series_colors[index % len(theme.series_colors)]
+        top = y + index * 24
+        draw.rounded_rectangle((x, top, x + 12, top + 12), radius=3, fill=color)
+        draw.text((x + 18, top - 1), label[:18], fill=theme.subtitle, font=font)
+
+
+def _plot_bar(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
+    _draw_axes(draw, theme)
+    centers = _label_x_axis(draw, labels, font, theme)
+    _draw_chart_legend(draw, y_columns, theme, font)
     minimum, maximum = _value_scale(series_values)
-    count = max(len(series_values), 1)
-    bar_group_width = 90
+    count = max(len(series_values[:3]), 1)
+    bar_group_width = 92
     bar_width = max(14, int(bar_group_width / count) - 8)
     for series_index, values in enumerate(series_values[:3]):
-        color = SERIES_COLORS[series_index]
+        color = theme.series_colors[series_index]
         offset = (series_index - (count - 1) / 2) * (bar_width + 8)
         for point_index, value in enumerate(values):
             x = centers[point_index] + offset
@@ -180,36 +229,37 @@ def _plot_bar(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[
             draw.rounded_rectangle((x - bar_width / 2, y, x + bar_width / 2, PLOT_BOUNDS[3]), radius=8, fill=color)
 
 
-def _plot_line(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], font: ImageFont.ImageFont, filled: bool = False) -> None:
-    _draw_axes(draw)
-    centers = _label_x_axis(draw, labels, font)
+def _plot_line(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme, filled: bool = False) -> None:
+    _draw_axes(draw, theme)
+    centers = _label_x_axis(draw, labels, font, theme)
+    _draw_chart_legend(draw, y_columns, theme, font)
     minimum, maximum = _value_scale(series_values)
     for series_index, values in enumerate(series_values[:3]):
-        color = SERIES_COLORS[series_index]
+        color = theme.series_colors[series_index]
         points = [(centers[index], _value_to_y(value, minimum, maximum)) for index, value in enumerate(values)]
-        if filled:
+        if filled and points:
             polygon = [(centers[0], PLOT_BOUNDS[3]), *points, (centers[-1], PLOT_BOUNDS[3])]
-            fill_color = "#bfdbfe" if series_index == 0 else "#bae6fd"
-            draw.polygon(polygon, fill=fill_color)
-        draw.line(points, fill=color, width=5)
+            draw.polygon(polygon, fill=theme.area_fills[series_index % len(theme.area_fills)])
+        draw.line(points, fill=color, width=4)
         for x, y in points:
-            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=color)
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=color, outline=theme.panel)
 
 
-def _plot_pie(draw: ImageDraw.ImageDraw, labels: list[str], values: list[float], font: ImageFont.ImageFont) -> None:
+def _plot_pie(draw: ImageDraw.ImageDraw, labels: list[str], values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
     total = sum(values) or 1.0
     bbox = (180, 160, 620, 600)
     start = -90.0
     for index, value in enumerate(values):
         extent = 360.0 * value / total
-        color = SERIES_COLORS[index % len(SERIES_COLORS)]
-        draw.pieslice(bbox, start=start, end=start + extent, fill=color)
-        draw.text((700, 180 + index * 42), f"{labels[index][:10]} {value:g}", fill=color, font=font)
+        color = theme.series_colors[index % len(theme.series_colors)]
+        draw.pieslice(bbox, start=start, end=start + extent, fill=color, outline=theme.panel)
+        ratio = f"{(value / total) * 100:.1f}%"
+        draw.text((700, 180 + index * 42), f"{labels[index][:10]} {ratio}", fill=theme.title, font=font)
         start += extent
 
 
-def _plot_scatter(draw: ImageDraw.ImageDraw, x_values: list[float], y_values: list[float], font: ImageFont.ImageFont) -> None:
-    _draw_axes(draw)
+def _plot_scatter(draw: ImageDraw.ImageDraw, x_values: list[float], y_values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
+    _draw_axes(draw, theme)
     x_min, x_max = min(x_values), max(x_values)
     y_min, y_max = min(y_values), max(y_values)
     if x_min == x_max:
@@ -220,13 +270,13 @@ def _plot_scatter(draw: ImageDraw.ImageDraw, x_values: list[float], y_values: li
     for x_value, y_value in zip(x_values, y_values):
         x = left + (x_value - x_min) / (x_max - x_min) * (right - left - 20) + 10
         y = _value_to_y(y_value, y_min, y_max)
-        draw.ellipse((x - 9, y - 9, x + 9, y + 9), fill=SERIES_COLORS[0])
-    draw.text((left, bottom + 16), "X", fill=TEXT, font=font)
-    draw.text((left - 26, top), "Y", fill=TEXT, font=font)
+        draw.ellipse((x - 9, y - 9, x + 9, y + 9), fill=theme.series_colors[0], outline=theme.title)
+    draw.text((left, bottom + 16), "X", fill=theme.axis, font=font)
+    draw.text((left - 24, top), "Y", fill=theme.axis, font=font)
 
 
-def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageFont.ImageFont) -> None:
-    _draw_axes(draw)
+def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
+    _draw_axes(draw, theme)
     left, _, right, bottom = PLOT_BOUNDS
     bins = min(8, max(4, len(values)))
     minimum = min(values)
@@ -243,15 +293,15 @@ def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageF
         bar_height = count / max_count * (bottom - PLOT_BOUNDS[1] - 20)
         x0 = left + index * width + 10
         y0 = bottom - bar_height
-        draw.rounded_rectangle((x0, y0, x0 + width - 20, bottom), radius=8, fill=SERIES_COLORS[1])
-        draw.text((x0 + 8, bottom + 16), str(index + 1), fill=TEXT, font=font)
+        draw.rounded_rectangle((x0, y0, x0 + width - 20, bottom), radius=8, fill=theme.series_colors[1])
+        draw.text((x0 + 8, bottom + 16), str(index + 1), fill=theme.axis, font=font)
 
 
-def _plot_box(draw: ImageDraw.ImageDraw, series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont) -> None:
-    _draw_axes(draw)
-    left, top, right, bottom = PLOT_BOUNDS
+def _plot_box(draw: ImageDraw.ImageDraw, series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
+    _draw_axes(draw, theme)
+    left, _, right, bottom = PLOT_BOUNDS
     minimum, maximum = _value_scale(series_values)
-    step = (right - left) / max(len(series_values), 1)
+    step = (right - left) / max(len(series_values[:3]), 1)
     for index, values in enumerate(series_values[:3]):
         sorted_values = sorted(values)
         q1 = sorted_values[len(sorted_values) // 4]
@@ -262,13 +312,18 @@ def _plot_box(draw: ImageDraw.ImageDraw, series_values: list[list[float]], y_col
         center = left + step * (index + 0.5)
         box_left = center - 34
         box_right = center + 34
-        draw.line((center, _value_to_y(low, minimum, maximum), center, _value_to_y(high, minimum, maximum)), fill=SERIES_COLORS[index], width=4)
-        draw.rectangle((box_left, _value_to_y(q3, minimum, maximum), box_right, _value_to_y(q1, minimum, maximum)), outline=SERIES_COLORS[index], width=4)
-        draw.line((box_left, _value_to_y(median, minimum, maximum), box_right, _value_to_y(median, minimum, maximum)), fill=SERIES_COLORS[index], width=4)
-        draw.text((center - 18, bottom + 16), y_columns[index][:8], fill=TEXT, font=font)
+        color = theme.series_colors[index]
+        draw.line((center, _value_to_y(low, minimum, maximum), center, _value_to_y(high, minimum, maximum)), fill=color, width=4)
+        draw.rectangle((box_left, _value_to_y(q3, minimum, maximum), box_right, _value_to_y(q1, minimum, maximum)), outline=color, width=4)
+        draw.line((box_left, _value_to_y(median, minimum, maximum), box_right, _value_to_y(median, minimum, maximum)), fill=color, width=4)
+        draw.text((center - 18, bottom + 16), y_columns[index][:8], fill=theme.axis, font=font)
 
 
-def _plot_heatmap(draw: ImageDraw.ImageDraw, records: list[dict[str, Any]], y_columns: list[str], font: ImageFont.ImageFont) -> None:
+def _blend_color(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
+    return tuple(int(start[index] + (end[index] - start[index]) * ratio) for index in range(3))
+
+
+def _plot_heatmap(draw: ImageDraw.ImageDraw, records: list[dict[str, Any]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
     left, top, _, _ = PLOT_BOUNDS
     cell_w = 140
     cell_h = 84
@@ -276,14 +331,14 @@ def _plot_heatmap(draw: ImageDraw.ImageDraw, records: list[dict[str, Any]], y_co
     maximum = max((value for row in grid_values for value in row), default=1.0) or 1.0
     for row_index, row in enumerate(grid_values):
         for col_index, value in enumerate(row):
-            intensity = int(230 - (value / maximum) * 150)
-            color = (80, 140, intensity)
+            ratio = 0.0 if maximum == 0 else value / maximum
+            color = _blend_color(theme.heatmap_start, theme.heatmap_end, ratio)
             x0 = left + col_index * cell_w
             y0 = top + row_index * cell_h
-            draw.rounded_rectangle((x0, y0, x0 + cell_w - 12, y0 + cell_h - 12), radius=12, fill=color)
-            draw.text((x0 + 36, y0 + 26), f"{value:g}", fill="#ffffff", font=font)
+            draw.rounded_rectangle((x0, y0, x0 + cell_w - 12, y0 + cell_h - 12), radius=12, fill=color, outline=theme.frame)
+            draw.text((x0 + 36, y0 + 26), f"{value:g}", fill=theme.title, font=font)
     for col_index, column in enumerate(y_columns[:4]):
-        draw.text((left + col_index * cell_w + 24, top - 28), column[:8], fill=TEXT, font=font)
+        draw.text((left + col_index * cell_w + 24, top - 28), column[:8], fill=theme.axis, font=font)
 
 
 def generate_chart(
@@ -315,23 +370,23 @@ def generate_chart(
     chart_output = _prepare_output_path(output_path, normalized_chart_type)
     labels, series_values = _extract_series(records, inferred_x_column, inferred_y_columns)
 
-    image, draw, _, body_font = _new_canvas(chart_title)
+    image, draw, _, body_font = _new_canvas(chart_title, TECH_THEME)
     if normalized_chart_type == "bar":
-        _plot_bar(draw, labels, series_values, body_font)
+        _plot_bar(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME)
     elif normalized_chart_type == "line":
-        _plot_line(draw, labels, series_values, body_font)
+        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME)
     elif normalized_chart_type == "pie":
-        _plot_pie(draw, labels, series_values[0], body_font)
+        _plot_pie(draw, labels, series_values[0], body_font, TECH_THEME)
     elif normalized_chart_type == "scatter":
-        _plot_scatter(draw, series_values[0], series_values[1], body_font)
+        _plot_scatter(draw, series_values[0], series_values[1], body_font, TECH_THEME)
     elif normalized_chart_type == "area":
-        _plot_line(draw, labels, series_values, body_font, filled=True)
+        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME, filled=True)
     elif normalized_chart_type == "histogram":
-        _plot_histogram(draw, series_values[0], body_font)
+        _plot_histogram(draw, series_values[0], body_font, TECH_THEME)
     elif normalized_chart_type == "box":
-        _plot_box(draw, series_values, inferred_y_columns, body_font)
+        _plot_box(draw, series_values, inferred_y_columns, body_font, TECH_THEME)
     elif normalized_chart_type == "heatmap":
-        _plot_heatmap(draw, records, inferred_y_columns, body_font)
+        _plot_heatmap(draw, records, inferred_y_columns, body_font, TECH_THEME)
 
     image.save(chart_output)
     return ChartGenerationResult(
