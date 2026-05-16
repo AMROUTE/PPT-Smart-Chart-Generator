@@ -30,6 +30,7 @@ from backend.services import (
     build_health_payload,
     build_slide_preview,
     extract_records_from_text,
+    normalize_chart_theme,
     normalize_chart_type_override,
     normalize_image_model,
     normalize_illustration_style,
@@ -94,11 +95,12 @@ class ServiceTests(unittest.TestCase):
         table.cell(3, 1).text = "180"
         prs.save(tmp_path)
         try:
-            payload = process_local_ppt(tmp_path, 1, chart_type_override="line", illustration_style="tech", image_model="flux")
+            payload = process_local_ppt(tmp_path, 1, chart_type_override="line", chart_theme="business", illustration_style="tech", image_model="flux")
             self.assertEqual(payload["file"]["slide_number"], 1)
             self.assertIn("pipeline", payload)
             self.assertIn("chart_image_url", payload["pipeline"])
             self.assertTrue(Path(payload["pipeline"]["final_pptx_path"]).exists())
+            self.assertEqual(payload["pipeline"]["chart_spec"]["theme"], "business")
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -121,11 +123,12 @@ class ServiceTests(unittest.TestCase):
             table.cell(3, 1).text = str(values[2])
         prs.save(tmp_path)
         try:
-            payload = process_local_ppt_batch(tmp_path, [1, 2], illustration_style="tech")
+            payload = process_local_ppt_batch(tmp_path, [1, 2], chart_theme="academic", illustration_style="tech")
             self.assertEqual(payload["processed_count"], 2)
             self.assertEqual(payload["slide_numbers"], [1, 2])
             self.assertTrue(Path(payload["final_pptx_path"]).exists())
             self.assertTrue(all(slide["final_pptx_path"] == payload["final_pptx_path"] for slide in payload["slides"]))
+            self.assertTrue(all(slide["chart_spec"]["theme"] == "academic" for slide in payload["slides"]))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -168,11 +171,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(records[0]["category"], "Revenue")
 
     def test_process_demo_text_returns_preview_assets(self):
-        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", illustration_style="business", image_model="wanx")
+        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", chart_theme="minimal", illustration_style="business", image_model="wanx")
         self.assertEqual(payload["pipeline"]["status"], "completed")
         self.assertTrue(payload["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))
         self.assertEqual(payload["pipeline"]["intent"]["chart_type"], "pie")
         self.assertIn("clip_score", payload["pipeline"]["illustration_meta"])
+        self.assertEqual(payload["pipeline"]["chart_spec"]["theme"], "minimal")
         self.assertIn(payload["pipeline"]["illustration_meta"]["generation_source"], {"local", "wanx", "flux"})
 
     def test_process_demo_text_falls_back_when_remote_image_model_is_unavailable(self):
@@ -185,6 +189,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(path_to_asset_url("outputs/demo.png"), "/assets/outputs/demo.png")
 
     def test_normalizers_accept_known_values(self):
+        self.assertEqual(normalize_chart_theme("business"), "business")
+        self.assertEqual(normalize_chart_theme("unknown"), "tech")
         self.assertEqual(normalize_chart_type_override("line"), "line")
         self.assertEqual(normalize_chart_type_override("auto"), "")
         self.assertEqual(normalize_illustration_style("tech"), "tech")
@@ -289,6 +295,29 @@ class ChartThemeTests(unittest.TestCase):
             )
             image = Image.open(chart.output_path)
             self.assertEqual(image.getpixel((10, 10)), (7, 17, 31))
+        finally:
+            output_chart.unlink(missing_ok=True)
+
+
+    def test_generate_chart_supports_business_theme(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        output_chart = Path(tempfile.gettempdir()) / "business_theme_chart.png"
+        try:
+            chart = generate_chart(
+                [
+                    {"month": "Jan", "sales": 120},
+                    {"month": "Feb", "sales": 150},
+                    {"month": "Mar", "sales": 180},
+                ],
+                "bar",
+                output_path=output_chart,
+                title="Business Theme Check",
+                theme="business",
+            )
+            image = Image.open(chart.output_path)
+            self.assertEqual(chart.theme, "business")
+            self.assertEqual(image.getpixel((10, 10)), (244, 247, 251))
         finally:
             output_chart.unlink(missing_ok=True)
 

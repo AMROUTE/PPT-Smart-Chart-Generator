@@ -2,7 +2,7 @@ async function request(url, options = {}) {
   const response = await fetch(url, options);
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.detail || "请求失败，请稍后再试。");
+    throw new Error(payload.detail || "Request failed. Please try again later.");
   }
   return payload;
 }
@@ -17,6 +17,10 @@ export function requestLogin(formData) {
 
 export function requestProcess(formData) {
   return request("/api/process", { method: "POST", body: formData });
+}
+
+export function requestProcessBatch(formData) {
+  return request("/api/process-batch", { method: "POST", body: formData });
 }
 
 export function requestDemo(formData) {

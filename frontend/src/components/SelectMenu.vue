@@ -74,7 +74,7 @@ onBeforeUnmount(() => {
 
       <div
         v-if="open"
-        class="absolute left-0 right-0 top-[calc(100%+0.75rem)] z-[100] max-h-80 overflow-y-auto space-y-2 rounded-2xl border border-white/50 bg-white/95 p-3 shadow-[0_20px_60px_rgb(0,0,0,0.14)] backdrop-blur-xl"
+        class="absolute left-0 right-0 top-[calc(100%+0.75rem)] z-[100] min-h-[11rem] max-h-80 overflow-y-auto space-y-2 rounded-2xl border border-white/50 bg-white/95 p-3 shadow-[0_20px_60px_rgb(0,0,0,0.14)] backdrop-blur-xl"
       >
       <button
         v-for="option in options"

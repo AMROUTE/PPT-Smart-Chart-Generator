@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -11,6 +11,7 @@ class PipelineInput:
     request_id: str = ""
     semantic_mode: str = "local"
     chart_type_override: str = ""
+    chart_theme: str = "tech"
     illustration_style: str = "auto"
     image_model: str = "local"
     custom_qwen_api_key: str = ""
@@ -26,6 +27,7 @@ class AgentState:
     request_id: str = ""
     semantic_mode: str = "local"
     chart_type_override: str = ""
+    chart_theme: str = "tech"
     illustration_style: str = "auto"
     image_model: str = "local"
     custom_qwen_api_key: str = ""

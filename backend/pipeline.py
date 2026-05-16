@@ -40,6 +40,11 @@ def _normalize_image_model(model: str | None) -> str:
     return normalized if normalized in {"local", "flux", "wanx"} else "local"
 
 
+def _normalize_chart_theme(theme: str | None) -> str:
+    normalized = (theme or "tech").strip().lower()
+    return normalized if normalized in {"tech", "business", "minimal", "academic"} else "tech"
+
+
 def _sanitize_illustration_text(text: str) -> str:
     sanitized = text or ""
     for term in ILLUSTRATION_FORBIDDEN_TERMS:
@@ -140,6 +145,7 @@ def parse_ppt_node(state: dict[str, Any]) -> dict[str, Any]:
 def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
     semantic_mode = str(state.get("semantic_mode", "local")).strip().lower() or "local"
     chart_override = _normalize_chart_override(state.get("chart_type_override"))
+    chart_theme = _normalize_chart_theme(state.get("chart_theme"))
     illustration_style = _normalize_illustration_style(state.get("illustration_style"))
     image_model = _normalize_image_model(state.get("image_model"))
     text_content = (state.get("text_content") or "").lower()
@@ -184,7 +190,7 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
     elif numeric_rows > 8 and len(numeric_column_indexes) == 1:
         chart_type = "line"
 
-    heuristic_result = {"task": "chart_generation", "chart_type": chart_override or chart_type, "audience": "business", "summary": "Inferred from slide text, label pattern, and extracted table structure.", "reason": "Heuristic semantic inference based on text, labels, and table shape.", "visual_theme": "business office collaboration" if illustration_style == "auto" else f"{illustration_style} visual scene", "palette": ["deep-blue", "sky-blue"], "keywords": ["office space", "team collaboration", "business atmosphere"], "source": "heuristic", "semantic_mode": "local", "image_model": image_model, "illustration_style": illustration_style}
+    heuristic_result = {"task": "chart_generation", "chart_type": chart_override or chart_type, "chart_theme": chart_theme, "audience": "business", "summary": "Inferred from slide text, label pattern, and extracted table structure.", "reason": "Heuristic semantic inference based on text, labels, and table shape.", "visual_theme": "business office collaboration" if illustration_style == "auto" else f"{illustration_style} visual scene", "palette": ["deep-blue", "sky-blue"], "keywords": ["office space", "team collaboration", "business atmosphere"], "source": "heuristic", "semantic_mode": "local", "image_model": image_model, "illustration_style": illustration_style}
 
     if semantic_mode == "qwen":
         try:
@@ -193,6 +199,7 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
             state["intent"] = {
                 "task": "chart_generation",
                 "chart_type": chart_override or llm_result["chart_type"],
+                "chart_theme": chart_theme,
                 "audience": llm_result["audience"],
                 "summary": llm_result["title"],
                 "reason": llm_result["reason"] if not chart_override else f"Chart type manually overridden to {chart_override} while keeping semantic result.",
@@ -232,13 +239,13 @@ def generate_chart_node(state: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Extracted table is empty.")
         records = [dict(zip(columns, row)) for row in rows]
         title = f"Slide {state['current_slide']} {chart_type.title()} Chart"
-        chart = generate_chart(records, chart_type=chart_type, output_path=output_path, title=title)
+        chart = generate_chart(records, chart_type=chart_type, output_path=output_path, title=title, theme=str(state.get("chart_theme", "tech")))
         state["chart_spec"] = chart.to_dict()
         state["chart_image"] = chart.output_path
         return append_log(state, "Chart generation completed from extracted table.")
     except Exception as exc:
         fallback_path = _write_chart_fallback_png(output_path, state["current_slide"], tables, chart_type)
-        state["chart_spec"] = {"chart_type": chart_type, "output_path": str(fallback_path), "title": f"Slide {state['current_slide']} chart recommendation", "data_points": len(tables[0].get("rows", [])) if tables else 0, "fallback": True}
+        state["chart_spec"] = {"chart_type": chart_type, "output_path": str(fallback_path), "title": f"Slide {state['current_slide']} chart recommendation", "theme": str(state.get("chart_theme", "tech")), "data_points": len(tables[0].get("rows", [])) if tables else 0, "fallback": True}
         state["chart_image"] = str(fallback_path)
         append_log(state, f"Chart generator fallback enabled: {exc}", "warning")
         return append_log(state, "Chart generation fallback completed.")
@@ -414,7 +421,7 @@ def _run_step_with_retry(state: dict[str, Any], step_name: str, step_fn: Any, ma
 
 def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload, PipelineInput):
-        initial_state = AgentState(ppt_path=payload.ppt_path, request_id=payload.request_id, current_slide=payload.current_slide, semantic_mode=payload.semantic_mode, chart_type_override=payload.chart_type_override, illustration_style=payload.illustration_style, image_model=payload.image_model, custom_qwen_api_key=payload.custom_qwen_api_key, custom_qwen_model=payload.custom_qwen_model, custom_wanx_api_key=payload.custom_wanx_api_key, custom_flux_api_key=payload.custom_flux_api_key).to_dict()
+        initial_state = AgentState(ppt_path=payload.ppt_path, request_id=payload.request_id, current_slide=payload.current_slide, semantic_mode=payload.semantic_mode, chart_type_override=payload.chart_type_override, chart_theme=payload.chart_theme, illustration_style=payload.illustration_style, image_model=payload.image_model, custom_qwen_api_key=payload.custom_qwen_api_key, custom_qwen_model=payload.custom_qwen_model, custom_wanx_api_key=payload.custom_wanx_api_key, custom_flux_api_key=payload.custom_flux_api_key).to_dict()
     else:
         initial_state = dict(payload)
         initial_state.setdefault("logs", [])
@@ -424,6 +431,7 @@ def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
         initial_state.setdefault("status", "pending")
         initial_state.setdefault("semantic_mode", "local")
         initial_state.setdefault("chart_type_override", "")
+        initial_state.setdefault("chart_theme", "tech")
         initial_state.setdefault("illustration_style", "auto")
         initial_state.setdefault("image_model", "local")
     state = dict(initial_state)

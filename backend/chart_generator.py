@@ -17,6 +17,7 @@ SUPPORTED_CHART_TYPES = (
     "box",
     "heatmap",
 )
+SUPPORTED_CHART_THEMES = ("tech", "business", "minimal", "academic")
 
 CANVAS_SIZE = (1200, 720)
 PLOT_BOUNDS = (120, 160, 1040, 560)
@@ -24,6 +25,9 @@ PLOT_BOUNDS = (120, 160, 1040, 560)
 
 @dataclass(frozen=True)
 class ChartTheme:
+    key: str
+    display_name: str
+    tagline: str
     background: str
     panel: str
     title: str
@@ -37,19 +41,73 @@ class ChartTheme:
     heatmap_end: tuple[int, int, int]
 
 
-TECH_THEME = ChartTheme(
-    background="#07111f",
-    panel="#0d1b2a",
-    title="#eef6ff",
-    subtitle="#9dc8ff",
-    axis="#d9ecff",
-    grid="#214463",
-    frame="#16304b",
-    series_colors=["#45c7ff", "#4f8cff", "#2ee6a6", "#ffd166", "#ff7a90"],
-    area_fills=["#123554", "#153f69", "#124e45"],
-    heatmap_start=(21, 43, 67),
-    heatmap_end=(69, 199, 255),
-)
+CHART_THEMES: dict[str, ChartTheme] = {
+    "tech": ChartTheme(
+        key="tech",
+        display_name="Tech Theme",
+        tagline="Technology Dashboard",
+        background="#07111f",
+        panel="#0d1b2a",
+        title="#eef6ff",
+        subtitle="#9dc8ff",
+        axis="#d9ecff",
+        grid="#214463",
+        frame="#16304b",
+        series_colors=["#45c7ff", "#4f8cff", "#2ee6a6", "#ffd166", "#ff7a90"],
+        area_fills=["#123554", "#153f69", "#124e45"],
+        heatmap_start=(21, 43, 67),
+        heatmap_end=(69, 199, 255),
+    ),
+    "business": ChartTheme(
+        key="business",
+        display_name="Business Theme",
+        tagline="Executive Summary",
+        background="#f4f7fb",
+        panel="#ffffff",
+        title="#1f2937",
+        subtitle="#64748b",
+        axis="#334155",
+        grid="#d9e2ec",
+        frame="#c7d2de",
+        series_colors=["#1d4ed8", "#0f766e", "#ca8a04", "#dc2626", "#7c3aed"],
+        area_fills=["#bfdbfe", "#99f6e4", "#fde68a"],
+        heatmap_start=(226, 232, 240),
+        heatmap_end=(29, 78, 216),
+    ),
+    "minimal": ChartTheme(
+        key="minimal",
+        display_name="Minimal Theme",
+        tagline="Clean Visual Summary",
+        background="#fcfcfd",
+        panel="#ffffff",
+        title="#111827",
+        subtitle="#6b7280",
+        axis="#374151",
+        grid="#e5e7eb",
+        frame="#e5e7eb",
+        series_colors=["#111827", "#4b5563", "#9ca3af", "#2563eb", "#10b981"],
+        area_fills=["#e5e7eb", "#dbeafe", "#d1fae5"],
+        heatmap_start=(243, 244, 246),
+        heatmap_end=(17, 24, 39),
+    ),
+    "academic": ChartTheme(
+        key="academic",
+        display_name="Academic Theme",
+        tagline="Research Presentation",
+        background="#fffdf8",
+        panel="#fffaf0",
+        title="#3b2f2f",
+        subtitle="#7c6f64",
+        axis="#4b5563",
+        grid="#e7dccb",
+        frame="#d6c7b0",
+        series_colors=["#8b5e3c", "#355c7d", "#6c8a3b", "#c06c84", "#f4a261"],
+        area_fills=["#eadbc8", "#dbe7f0", "#e1ecd2"],
+        heatmap_start=(246, 241, 231),
+        heatmap_end=(53, 92, 125),
+    ),
+}
+DEFAULT_CHART_THEME = "tech"
 
 
 @dataclass
@@ -59,6 +117,7 @@ class ChartGenerationResult:
     x_column: str | None
     y_columns: list[str]
     title: str
+    theme: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +126,7 @@ class ChartGenerationResult:
             "x_column": self.x_column,
             "y_columns": self.y_columns,
             "title": self.title,
+            "theme": self.theme,
         }
 
 
@@ -134,14 +194,17 @@ def _infer_y_columns(
 
 
 def _extract_series(records: list[dict[str, Any]], x_column: str | None, y_columns: list[str]) -> tuple[list[str], list[list[float]]]:
-    labels = [str(record.get(x_column, f"Item {index + 1}")) for index, record in enumerate(records)] if x_column else [
-        f"Item {index + 1}" for index in range(len(records))
-    ]
+    labels = [str(record.get(x_column, f"Item {index + 1}")) for index, record in enumerate(records)] if x_column else [f"Item {index + 1}" for index in range(len(records))]
     series_values: list[list[float]] = []
     for column in y_columns:
         values = [_to_float(record.get(column)) or 0.0 for record in records]
         series_values.append(values)
     return labels, series_values
+
+
+def _resolve_theme(theme: str | None) -> ChartTheme:
+    normalized = (theme or DEFAULT_CHART_THEME).strip().lower()
+    return CHART_THEMES.get(normalized, CHART_THEMES[DEFAULT_CHART_THEME])
 
 
 def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
@@ -157,7 +220,7 @@ def _new_canvas(title: str, theme: ChartTheme) -> tuple[Image.Image, ImageDraw.I
     draw.rounded_rectangle((32, 32, CANVAS_SIZE[0] - 32, CANVAS_SIZE[1] - 32), radius=28, fill=theme.panel, outline=theme.frame, width=3)
     draw.rounded_rectangle((80, 110, 1080, 610), radius=24, outline=theme.frame, width=2)
     draw.text((120, 70), title, fill=theme.title, font=title_font)
-    draw.text((120, 92), "Tech Theme Dashboard", fill=theme.subtitle, font=body_font)
+    draw.text((120, 92), theme.tagline, fill=theme.subtitle, font=body_font)
     return image, draw, title_font, body_font
 
 
@@ -348,11 +411,13 @@ def generate_chart(
     title: str | None = None,
     x_column: str | None = None,
     y_columns: list[str] | None = None,
+    theme: str = DEFAULT_CHART_THEME,
 ) -> ChartGenerationResult:
     normalized_chart_type = chart_type.lower().strip()
     if normalized_chart_type not in SUPPORTED_CHART_TYPES:
         raise ValueError(f"Unsupported chart type: {chart_type}. Supported types: {', '.join(SUPPORTED_CHART_TYPES)}.")
 
+    resolved_theme = _resolve_theme(theme)
     records = _coerce_records(data)
     numeric_columns = _numeric_columns(records)
     inferred_x_column = x_column or _infer_x_column(records, numeric_columns)
@@ -370,23 +435,23 @@ def generate_chart(
     chart_output = _prepare_output_path(output_path, normalized_chart_type)
     labels, series_values = _extract_series(records, inferred_x_column, inferred_y_columns)
 
-    image, draw, _, body_font = _new_canvas(chart_title, TECH_THEME)
+    image, draw, _, body_font = _new_canvas(chart_title, resolved_theme)
     if normalized_chart_type == "bar":
-        _plot_bar(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME)
+        _plot_bar(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme)
     elif normalized_chart_type == "line":
-        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME)
+        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme)
     elif normalized_chart_type == "pie":
-        _plot_pie(draw, labels, series_values[0], body_font, TECH_THEME)
+        _plot_pie(draw, labels, series_values[0], body_font, resolved_theme)
     elif normalized_chart_type == "scatter":
-        _plot_scatter(draw, series_values[0], series_values[1], body_font, TECH_THEME)
+        _plot_scatter(draw, series_values[0], series_values[1], body_font, resolved_theme)
     elif normalized_chart_type == "area":
-        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, TECH_THEME, filled=True)
+        _plot_line(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme, filled=True)
     elif normalized_chart_type == "histogram":
-        _plot_histogram(draw, series_values[0], body_font, TECH_THEME)
+        _plot_histogram(draw, series_values[0], body_font, resolved_theme)
     elif normalized_chart_type == "box":
-        _plot_box(draw, series_values, inferred_y_columns, body_font, TECH_THEME)
+        _plot_box(draw, series_values, inferred_y_columns, body_font, resolved_theme)
     elif normalized_chart_type == "heatmap":
-        _plot_heatmap(draw, records, inferred_y_columns, body_font, TECH_THEME)
+        _plot_heatmap(draw, records, inferred_y_columns, body_font, resolved_theme)
 
     image.save(chart_output)
     return ChartGenerationResult(
@@ -395,4 +460,5 @@ def generate_chart(
         x_column=inferred_x_column,
         y_columns=inferred_y_columns,
         title=chart_title,
+        theme=resolved_theme.key,
     )

@@ -7,17 +7,21 @@ import SlideOutlinePanel from "../components/SlideOutlinePanel.vue";
 import UploadDropzone from "../components/UploadDropzone.vue";
 import {
   chartTypeOptions,
+  chartThemeOptions,
   illustrationStyleOptions,
   imageModelOptions,
   semanticModeOptions,
 } from "../config/options";
 import { useUserSettings } from "../composables/useUserSettings";
-import { requestDemo, requestProcess, requestSlideOutline, requestSlidePreview } from "../services/api";
+import { requestDemo, requestProcess, requestProcessBatch, requestSlideOutline, requestSlidePreview } from "../services/api";
 
 const { settings } = useUserSettings();
 
 const file = ref(null);
 const slideNumber = ref(1);
+const batchSlideNumbers = ref("");
+const pptProcessMode = ref("single");
+const selectedBatchSlideNumber = ref(0);
 const loading = ref(false);
 const errorMessage = ref("");
 const response = ref(null);
@@ -28,6 +32,7 @@ const progressValue = ref(0);
 const stageCards = ref([]);
 const semanticMode = ref(settings.defaultSemanticMode);
 const chartTypeOverride = ref("auto");
+const chartTheme = ref("tech");
 const illustrationStyle = ref(settings.defaultIllustrationStyle);
 const imageModel = ref(settings.defaultImageModel);
 const slidePreviewUrl = ref("");
@@ -69,10 +74,18 @@ const fileInfo = computed(() => {
   };
 });
 
-const pipelineResult = computed(() => response.value?.pipeline ?? null);
+const batchResult = computed(() => response.value?.slides ? response.value : null);
+const selectedBatchSlideResult = computed(() => {
+  if (!batchResult.value?.slides?.length) {
+    return null;
+  }
+  const selected = selectedBatchSlideNumber.value;
+  return batchResult.value.slides.find((item) => Number(item.current_slide ?? item.slide_number) === selected) ?? batchResult.value.slides[batchResult.value.slides.length - 1] ?? null;
+});
+const pipelineResult = computed(() => response.value?.pipeline ?? selectedBatchSlideResult.value ?? null);
 const chartPreviewUrl = computed(() => pipelineResult.value?.chart_image_url ?? "");
 const illustrationPreviewUrl = computed(() => pipelineResult.value?.illustration_image_url ?? "");
-const downloadUrl = computed(() => pipelineResult.value?.final_pptx_url ?? "");
+const downloadUrl = computed(() => response.value?.final_pptx_url ?? pipelineResult.value?.final_pptx_url ?? "");
 const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
 const intentInfo = computed(() => pipelineResult.value?.intent ?? null);
 const illustrationMeta = computed(() => pipelineResult.value?.illustration_meta ?? null);
@@ -94,6 +107,9 @@ const clipScoreValue = computed(() => {
 const chartOverrideText = computed(
   () => chartTypeOptions.find((item) => item.value === chartTypeOverride.value)?.label ?? chartTypeOverride.value,
 );
+const chartThemeLabel = computed(
+  () => chartThemeOptions.find((item) => item.value === chartTheme.value)?.label ?? chartTheme.value,
+);
 const canPreview = computed(() => Boolean(file.value || uploadToken.value));
 const illustrationStyleLabel = computed(
   () => illustrationStyleOptions.find((item) => item.value === illustrationStyle.value)?.label ?? illustrationStyle.value,
@@ -103,6 +119,7 @@ const imageModelLabel = computed(
 );
 const hasVisualOutput = computed(() => Boolean(chartPreviewUrl.value || illustrationPreviewUrl.value));
 const hasPipelineOutput = computed(() => Boolean(stageCards.value.length || recentLogs.value.length));
+const isBatchMode = computed(() => activeMode.value === "ppt" && pptProcessMode.value === "batch");
 const currentStudioLabel = computed(
   () => studioTabs.find((item) => item.key === studioPanel.value)?.label ?? "总览",
 );
@@ -133,6 +150,7 @@ function appendPersonalSettings(formData) {
 async function submitForm() {
   errorMessage.value = "";
   response.value = null;
+  selectedBatchSlideNumber.value = 0;
   startProgress();
 
   if (!file.value) {
@@ -147,6 +165,7 @@ async function submitForm() {
   formData.append("slide_number", String(slideNumber.value));
   formData.append("semantic_mode", semanticMode.value);
   formData.append("chart_type_override", chartTypeOverride.value);
+  formData.append("chart_theme", chartTheme.value);
   formData.append("illustration_style", illustrationStyle.value);
   formData.append("image_model", imageModel.value);
   appendPersonalSettings(formData);
@@ -167,6 +186,7 @@ async function submitForm() {
 async function runDemo() {
   errorMessage.value = "";
   response.value = null;
+  selectedBatchSlideNumber.value = 0;
   startProgress();
   demoLoading.value = true;
 
@@ -174,6 +194,7 @@ async function runDemo() {
   formData.append("source_text", demoText.value);
   formData.append("semantic_mode", semanticMode.value);
   formData.append("chart_type_override", chartTypeOverride.value);
+  formData.append("chart_theme", chartTheme.value);
   formData.append("illustration_style", illustrationStyle.value);
   formData.append("image_model", imageModel.value);
   appendPersonalSettings(formData);
@@ -191,6 +212,48 @@ async function runDemo() {
   }
 }
 
+async function submitBatchForm() {
+  errorMessage.value = "";
+  response.value = null;
+  selectedBatchSlideNumber.value = 0;
+  startProgress();
+
+  if (!file.value) {
+    errorMessage.value = "Please upload a PPTX file first.";
+    stopProgress(true);
+    return;
+  }
+  if (!batchSlideNumbers.value.trim()) {
+    errorMessage.value = "Please enter batch slide numbers, for example: 1,2,3.";
+    stopProgress(true);
+    return;
+  }
+
+  loading.value = true;
+  const formData = new FormData();
+  formData.append("file", file.value);
+  formData.append("slide_numbers", batchSlideNumbers.value.trim());
+  formData.append("semantic_mode", semanticMode.value);
+  formData.append("chart_type_override", chartTypeOverride.value);
+  formData.append("chart_theme", chartTheme.value);
+  formData.append("illustration_style", illustrationStyle.value);
+  formData.append("image_model", imageModel.value);
+  appendPersonalSettings(formData);
+
+  try {
+    const payload = await requestProcessBatch(formData);
+    response.value = payload;
+    selectedBatchSlideNumber.value = Number(payload.slides?.[payload.slides.length - 1]?.current_slide ?? payload.slides?.[payload.slides.length - 1]?.slide_number ?? 0);
+    finalizeProgress(payload.slides?.[payload.slides.length - 1]);
+    studioPanel.value = "chart";
+  } catch (error) {
+    errorMessage.value = error.message;
+    stopProgress(true);
+  } finally {
+    loading.value = false;
+  }
+}
+
 function handleSelectedFile(selected) {
   file.value = selected ?? null;
   uploadToken.value = "";
@@ -199,6 +262,9 @@ function handleSelectedFile(selected) {
   slideOutline.value = [];
   slideCount.value = 0;
   slideNumber.value = 1;
+  batchSlideNumbers.value = "";
+  pptProcessMode.value = "single";
+  selectedBatchSlideNumber.value = 0;
   response.value = null;
   studioPanel.value = "overview";
   if (file.value) {
@@ -307,7 +373,11 @@ function rerunCurrentMode() {
     return;
   }
   if (activeMode.value === "ppt") {
-    submitForm();
+    if (pptProcessMode.value === "batch") {
+      submitBatchForm();
+    } else {
+      submitForm();
+    }
   } else {
     runDemo();
   }
@@ -318,8 +388,15 @@ function selectOutlineSlide(targetSlide) {
   studioPanel.value = "outline";
 }
 
+function selectBatchSlide(targetSlide) {
+  selectedBatchSlideNumber.value = Number(targetSlide);
+  if (selectedBatchSlideResult.value) {
+    studioPanel.value = selectedBatchSlideResult.value.illustration_image_url ? "illustration" : "chart";
+  }
+}
+
 watch(slideNumber, () => {
-  if (activeMode.value === "ppt" && canPreview.value) {
+  if (activeMode.value === "ppt" && pptProcessMode.value === "single" && canPreview.value) {
     fetchSlidePreview(false);
   }
 });
@@ -429,6 +506,16 @@ watch(
                 />
               </label>
 
+              <label v-if="activeMode === 'ppt'" class="block space-y-2">
+                <span class="text-sm font-medium text-gray-500">Batch Slide Numbers</span>
+                <input
+                  v-model="batchSlideNumbers"
+                  type="text"
+                  placeholder="e.g. 1,2,3"
+                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
+                />
+              </label>
+
               <div class="grid gap-3">
                 <button
                   type="button"
@@ -468,7 +555,7 @@ watch(
                 </summary>
 
                 <div class="grid grid-rows-[0fr] transition-all duration-300 ease-out group-open:grid-rows-[1fr]">
-                  <div class="overflow-hidden">
+                  <div class="overflow-visible pb-1">
                     <div class="mt-5 grid gap-4">
                       <label class="block space-y-2">
                         <span class="text-sm font-medium text-gray-500">语义分析模式</span>
@@ -774,6 +861,51 @@ watch(
                 <div class="studio-scrollbar max-h-[52rem] overflow-auto">
                   <SlideOutlinePanel :slides="slideOutline" :active-slide="slideNumber" @select-slide="selectOutlineSlide" />
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="batchResult" class="rounded-[28px] border border-transparent bg-white/75 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-medium text-gray-500">Batch Summary</p>
+                <h3 class="mt-2 text-2xl font-semibold tracking-tight text-gray-900">Multi-slide Result Summary</h3>
+              </div>
+              <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">{{ batchResult.processed_count }} slides</span>
+            </div>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
+                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Requested Slides</p>
+                <p class="mt-2 text-sm font-semibold text-gray-900">{{ batchResult.slide_numbers?.join(', ') || '-' }}</p>
+              </div>
+              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
+                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Processed Count</p>
+                <p class="mt-2 text-sm font-semibold text-gray-900">{{ batchResult.processed_count }} / {{ batchResult.slide_numbers?.length || 0 }}</p>
+              </div>
+              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
+                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Selected Slide</p>
+                <p class="mt-2 text-sm font-semibold text-gray-900">{{ pipelineResult?.current_slide || '-' }}</p>
+              </div>
+              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
+                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Final Output</p>
+                <p class="mt-2 break-all text-sm font-semibold text-gray-900">{{ batchResult.final_pptx_path || '-' }}</p>
+              </div>
+            </div>
+
+            <div class="mt-6">
+              <p class="text-sm font-medium text-gray-500">Slides</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button
+                  v-for="item in batchResult.slides"
+                  :key="item.current_slide || item.slide_number"
+                  type="button"
+                  class="rounded-full border px-4 py-2 text-sm transition-all duration-200 ease-in-out"
+                  :class="Number(item.current_slide || item.slide_number) === Number(pipelineResult?.current_slide) ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'"
+                  @click="selectBatchSlide(item.current_slide || item.slide_number)"
+                >
+                  Slide {{ item.current_slide || item.slide_number }}
+                </button>
               </div>
             </div>
           </section>

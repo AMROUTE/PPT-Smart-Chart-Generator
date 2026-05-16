@@ -14,6 +14,7 @@ from backend.database import (
     record_slide_outline,
     record_upload_session,
 )
+from backend.chart_generator import DEFAULT_CHART_THEME, SUPPORTED_CHART_THEMES
 from backend.schemas import PipelineInput
 
 
@@ -102,6 +103,11 @@ def normalize_illustration_style(style: str | None) -> str:
     return normalized if normalized in allowed else "auto"
 
 
+def normalize_chart_theme(theme: str | None) -> str:
+    normalized = (theme or DEFAULT_CHART_THEME).strip().lower()
+    return normalized if normalized in SUPPORTED_CHART_THEMES else DEFAULT_CHART_THEME
+
+
 def normalize_image_model(image_model: str | None) -> str:
     normalized = (image_model or "local").strip().lower()
     allowed = {"local", "flux", "wanx"}
@@ -124,7 +130,7 @@ def _normalize_slide_numbers(slide_numbers: list[int] | None, slide_count: int) 
     return deduped
 
 
-def _record_job(result: dict[str, Any], upload_token: str, source_type: str, slide_number: int, semantic_mode: str, chart_type_override: str, illustration_style: str, image_model: str) -> None:
+def _record_job(result: dict[str, Any], upload_token: str, source_type: str, slide_number: int, semantic_mode: str, chart_type_override: str, chart_theme: str, illustration_style: str, image_model: str) -> None:
     record_processing_job(
         request_id=result["request_id"],
         upload_token=upload_token,
@@ -144,6 +150,7 @@ def process_local_ppt(
     slide_number: int,
     semantic_mode: str = "local",
     chart_type_override: str = "",
+    chart_theme: str = DEFAULT_CHART_THEME,
     illustration_style: str = "auto",
     image_model: str = "local",
     custom_qwen_api_key: str = "",
@@ -162,6 +169,7 @@ def process_local_ppt(
     metadata = build_file_metadata(ppt_path, slide_number)
     resolved_mode = normalize_semantic_mode(semantic_mode)
     resolved_chart_type = normalize_chart_type_override(chart_type_override)
+    resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
     result = run_pipeline(
@@ -171,6 +179,7 @@ def process_local_ppt(
             request_id=next_request_id("ppt"),
             semantic_mode=resolved_mode,
             chart_type_override=resolved_chart_type,
+            chart_theme=resolved_theme,
             illustration_style=resolved_style,
             image_model=resolved_model,
             custom_qwen_api_key=custom_qwen_api_key.strip(),
@@ -179,13 +188,14 @@ def process_local_ppt(
             custom_flux_api_key=custom_flux_api_key.strip(),
         )
     )
-    _record_job(result, ppt_path.name, "ppt", slide_number, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
+    _record_job(result, ppt_path.name, "ppt", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
     enrich_pipeline_assets(result)
     return {
         "message": "Pipeline completed successfully.",
         "file": metadata,
         "semantic_mode": resolved_mode,
         "chart_type_override": resolved_chart_type,
+        "chart_theme": resolved_theme,
         "illustration_style": resolved_style,
         "image_model": resolved_model,
         "pipeline": result,
@@ -197,6 +207,7 @@ def process_local_ppt_batch(
     slide_numbers: list[int] | None = None,
     semantic_mode: str = "local",
     chart_type_override: str = "",
+    chart_theme: str = DEFAULT_CHART_THEME,
     illustration_style: str = "auto",
     image_model: str = "local",
     custom_qwen_api_key: str = "",
@@ -217,6 +228,7 @@ def process_local_ppt_batch(
     target_slides = _normalize_slide_numbers(slide_numbers, slide_count)
     resolved_mode = normalize_semantic_mode(semantic_mode)
     resolved_chart_type = normalize_chart_type_override(chart_type_override)
+    resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
     preloaded = extract_multiple_slide_contents(ppt_path, target_slides)
@@ -233,6 +245,7 @@ def process_local_ppt_batch(
                 "current_slide": slide_number,
                 "semantic_mode": resolved_mode,
                 "chart_type_override": resolved_chart_type,
+                "chart_theme": resolved_theme,
                 "illustration_style": resolved_style,
                 "image_model": resolved_model,
                 "custom_qwen_api_key": custom_qwen_api_key.strip(),
@@ -260,7 +273,7 @@ def process_local_ppt_batch(
                 "stage_history": [],
             }
         )
-        _record_job(result, ppt_path.name, "ppt-batch", slide_number, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
+        _record_job(result, ppt_path.name, "ppt-batch", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
         enrich_pipeline_assets(result)
         slide_results.append(result)
         current_source = Path(result["final_pptx_path"])
@@ -273,6 +286,7 @@ def process_local_ppt_batch(
         "processed_count": len(slide_results),
         "semantic_mode": resolved_mode,
         "chart_type_override": resolved_chart_type,
+        "chart_theme": resolved_theme,
         "illustration_style": resolved_style,
         "image_model": resolved_model,
         "final_pptx_path": str(batch_output_path),
@@ -309,6 +323,7 @@ def process_demo_text(
     source_text: str,
     semantic_mode: str = "local",
     chart_type_override: str = "",
+    chart_theme: str = DEFAULT_CHART_THEME,
     illustration_style: str = "auto",
     image_model: str = "local",
     custom_qwen_api_key: str = "",
@@ -321,6 +336,7 @@ def process_demo_text(
     records = extract_records_from_text(source_text)
     resolved_mode = normalize_semantic_mode(semantic_mode)
     resolved_chart_type = normalize_chart_type_override(chart_type_override)
+    resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
     request_id = next_request_id("demo")
@@ -331,6 +347,7 @@ def process_demo_text(
             "current_slide": 1,
             "semantic_mode": resolved_mode,
             "chart_type_override": resolved_chart_type,
+            "chart_theme": resolved_theme,
             "illustration_style": resolved_style,
             "image_model": resolved_model,
             "custom_qwen_api_key": custom_qwen_api_key.strip(),
@@ -352,12 +369,13 @@ def process_demo_text(
             "stage_history": [],
         }
     )
-    _record_job(result, "demo", "demo", 1, resolved_mode, resolved_chart_type, resolved_style, resolved_model)
+    _record_job(result, "demo", "demo", 1, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
     enrich_pipeline_assets(result)
     return {
         "message": "Text-to-chart demo completed successfully.",
         "semantic_mode": resolved_mode,
         "chart_type_override": resolved_chart_type,
+        "chart_theme": resolved_theme,
         "illustration_style": resolved_style,
         "image_model": resolved_model,
         "demo": {
@@ -454,6 +472,7 @@ def build_health_payload() -> dict[str, Any]:
         "flux_model_endpoint": settings.flux_model_endpoint,
         "semantic_modes": ["local", "qwen"],
         "image_models": ["local", "flux", "wanx"],
+        "chart_themes": list(SUPPORTED_CHART_THEMES),
         "illustration_styles": ["auto", "business", "tech", "education", "medical", "academic", "sketch"],
         "features": [
             "retry-logging",
@@ -464,7 +483,7 @@ def build_health_payload() -> dict[str, Any]:
             "chart-override",
             "style-selection",
             "sqlite-database",
-            "tech-chart-theme",
+            "multi-chart-theme",
             "batch-processing",
         ],
         **database_payload,
