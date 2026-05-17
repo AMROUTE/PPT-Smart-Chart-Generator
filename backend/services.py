@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -295,6 +296,167 @@ def process_local_ppt_batch(
     }
 
 
+def _normalize_slide_range(slide_count: int, slide_start: int, slide_end: int | None = None) -> tuple[int, int]:
+    if slide_count < 1:
+        raise ValueError("This PPT has no slides.")
+    start = int(slide_start or 1)
+    end = int(slide_end or slide_count)
+    if start < 1:
+        raise ValueError("Batch slide start must be greater than or equal to 1.")
+    if end < start:
+        raise ValueError("Batch slide end must be greater than or equal to slide start.")
+    if end > slide_count:
+        raise ValueError(f"Batch slide end {end} is out of range. This PPT has {slide_count} slides.")
+    return start, end
+
+
+def _write_batch_pptx(ppt_path: Path, batch_id: str, successful_results: list[dict[str, Any]]) -> Path:
+    from backend.insert_to_pptx import insert_generated_assets
+
+    output_dir = ensure_output_dir()
+    final_path = output_dir / f"{ppt_path.stem}_{batch_id}_batch_enhanced{ppt_path.suffix}"
+    shutil.copyfile(ppt_path, final_path)
+
+    for result in successful_results:
+        slide_number = int(result.get("current_slide", 1))
+        temp_path = final_path.with_name(f"{final_path.stem}_slide_{slide_number}_tmp{final_path.suffix}")
+        intent = result.get("intent", {})
+        insert_generated_assets(
+            ppt_path=final_path,
+            output_path=temp_path,
+            slide_number=slide_number,
+            chart_path=result.get("chart_image") or None,
+            illustration_path=result.get("illustration_image") or None,
+            title=f"第 {slide_number} 页批量图表增强结果",
+            subtitle=intent.get("reason", "批量处理自动生成结果。"),
+            intent=intent,
+        )
+        temp_path.replace(final_path)
+
+    return final_path
+
+
+def process_ppt_batch(
+    file_path: str | Path,
+    slide_start: int = 1,
+    slide_end: int | None = None,
+    semantic_mode: str = "local",
+    chart_type_override: str = "",
+    chart_theme: str = DEFAULT_CHART_THEME,
+    illustration_style: str = "auto",
+    image_model: str = "local",
+    custom_qwen_api_key: str = "",
+    custom_qwen_model: str = "",
+    custom_wanx_api_key: str = "",
+    custom_flux_api_key: str = "",
+) -> dict[str, Any]:
+    from backend.pipeline import run_pipeline
+    from backend.ppt_parser import get_slide_count
+
+    ppt_path = Path(file_path)
+    if not ppt_path.exists():
+        raise FileNotFoundError(f"PPT file not found: {ppt_path}")
+    if not allowed_file(ppt_path.name):
+        raise ValueError("Only .pptx files are supported.")
+
+    slide_count = get_slide_count(ppt_path)
+    start, end = _normalize_slide_range(slide_count, slide_start, slide_end)
+    resolved_mode = normalize_semantic_mode(semantic_mode)
+    resolved_chart_type = normalize_chart_type_override(chart_type_override)
+    resolved_theme = normalize_chart_theme(chart_theme)
+    resolved_style = normalize_illustration_style(illustration_style)
+    resolved_model = normalize_image_model(image_model)
+    batch_id = next_request_id("batch")
+    slide_payloads: list[dict[str, Any]] = []
+    successful_results: list[dict[str, Any]] = []
+
+    for slide_number in range(start, end + 1):
+        request_id = f"{batch_id}-s{slide_number}"
+        try:
+            result = run_pipeline(
+                PipelineInput(
+                    ppt_path=str(ppt_path),
+                    current_slide=slide_number,
+                    request_id=request_id,
+                    semantic_mode=resolved_mode,
+                    chart_type_override=resolved_chart_type,
+                    chart_theme=resolved_theme,
+                    illustration_style=resolved_style,
+                    image_model=resolved_model,
+                    custom_qwen_api_key=custom_qwen_api_key.strip(),
+                    custom_qwen_model=custom_qwen_model.strip(),
+                    custom_wanx_api_key=custom_wanx_api_key.strip(),
+                    custom_flux_api_key=custom_flux_api_key.strip(),
+                )
+            )
+            _record_job(result, ppt_path.name, "batch", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
+            enrich_pipeline_assets(result)
+            successful_results.append(result)
+            slide_payloads.append(
+                {
+                    "slide_number": slide_number,
+                    "status": result.get("status", "completed"),
+                    "pipeline": result,
+                }
+            )
+        except Exception as exc:
+            record_processing_job(
+                request_id=request_id,
+                upload_token=ppt_path.name,
+                source_type="batch",
+                slide_number=slide_number,
+                semantic_mode=resolved_mode,
+                chart_type_override=resolved_chart_type,
+                illustration_style=resolved_style,
+                image_model=resolved_model,
+                status="failed",
+                final_pptx_path="",
+            )
+            slide_payloads.append(
+                {
+                    "slide_number": slide_number,
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+
+    final_pptx_path = ""
+    final_pptx_url = ""
+    if successful_results:
+        final_path = _write_batch_pptx(ppt_path, batch_id, successful_results)
+        final_pptx_path = str(final_path)
+        final_pptx_url = path_to_asset_url(final_path)
+
+    failure_count = sum(1 for item in slide_payloads if item["status"] == "failed")
+    success_count = len(slide_payloads) - failure_count
+    return {
+        "message": "Batch pipeline completed." if failure_count == 0 else "Batch pipeline completed with failures.",
+        "file": {
+            **build_file_metadata(ppt_path, start),
+            "slide_count": slide_count,
+            "slide_start": start,
+            "slide_end": end,
+        },
+        "semantic_mode": resolved_mode,
+        "chart_type_override": resolved_chart_type,
+        "chart_theme": resolved_theme,
+        "illustration_style": resolved_style,
+        "image_model": resolved_model,
+        "batch": {
+            "request_id": batch_id,
+            "status": "completed" if failure_count == 0 else "partial",
+            "slide_start": start,
+            "slide_end": end,
+            "total_slides": len(slide_payloads),
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "final_pptx_path": final_pptx_path,
+            "final_pptx_url": final_pptx_url,
+            "slides": slide_payloads,
+        },
+    }
+
+
 def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
     matches = re.findall(
         r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:\s]*(\d+(?:\.\d+)?)",
@@ -480,6 +642,7 @@ def build_health_payload() -> dict[str, Any]:
             "illustration-preview",
             "demo-chart",
             "ppt-writeback",
+            "batch-processing",
             "chart-override",
             "style-selection",
             "sqlite-database",

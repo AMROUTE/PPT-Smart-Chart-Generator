@@ -46,3 +46,17 @@ These instructions apply to the entire repository unless a deeper `AGENTS.md` ov
 - Read `README.md` first for current architecture and workflow context.
 - Check `docs/` before making larger product or architecture assumptions.
 - If adding nested conventions for a subdirectory, place a more specific `AGENTS.md` there.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `AMROUTE/PPT-Smart-Chart-Generator`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default mattpocock/skills triage label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo: use root `CONTEXT.md` and `docs/adr/` for domain language and architecture decisions. See `docs/agents/domain.md`.

@@ -17,6 +17,8 @@ except ModuleNotFoundError:
     MSO_AUTO_SHAPE_TYPE = None
     Inches = None
 
+from fastapi.testclient import TestClient
+
 from backend.app import create_app
 from backend.chart_generator import generate_chart
 from backend.database import authenticate_or_create_user, init_db
@@ -37,6 +39,7 @@ from backend.services import (
     parse_presentation_slides,
     path_to_asset_url,
     process_demo_text,
+    process_ppt_batch,
     process_local_ppt,
     process_local_ppt_batch,
 )
@@ -129,6 +132,43 @@ class ServiceTests(unittest.TestCase):
             self.assertTrue(Path(payload["final_pptx_path"]).exists())
             self.assertTrue(all(slide["final_pptx_path"] == payload["final_pptx_path"] for slide in payload["slides"]))
             self.assertTrue(all(slide["chart_spec"]["theme"] == "academic" for slide in payload["slides"]))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_process_ppt_batch_runs_selected_slide_range(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-batch-source.pptx"
+        prs = Presentation()
+        for slide_index in range(1, 4):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_textbox(1000000, 700000, 5000000, 700000).text_frame.text = f"第 {slide_index} 页营收趋势"
+            table = slide.shapes.add_table(4, 2, 1000000, 1800000, 4000000, 2000000).table
+            table.cell(0, 0).text = "季度"
+            table.cell(0, 1).text = "营收"
+            table.cell(1, 0).text = "Q1"
+            table.cell(1, 1).text = str(100 + slide_index)
+            table.cell(2, 0).text = "Q2"
+            table.cell(2, 1).text = str(140 + slide_index)
+            table.cell(3, 0).text = "Q3"
+            table.cell(3, 1).text = str(180 + slide_index)
+        prs.save(tmp_path)
+        try:
+            payload = process_ppt_batch(
+                tmp_path,
+                slide_start=1,
+                slide_end=2,
+                chart_type_override="line",
+                illustration_style="tech",
+                image_model="local",
+            )
+            self.assertEqual(payload["batch"]["total_slides"], 2)
+            self.assertEqual(payload["batch"]["success_count"], 2)
+            self.assertEqual(payload["batch"]["failure_count"], 0)
+            self.assertEqual([item["slide_number"] for item in payload["batch"]["slides"]], [1, 2])
+            self.assertTrue(Path(payload["batch"]["final_pptx_path"]).exists())
+            self.assertTrue(payload["batch"]["final_pptx_url"].startswith("/assets/outputs/"))
+            self.assertTrue(payload["batch"]["slides"][0]["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -342,6 +382,14 @@ class AppTests(unittest.TestCase):
         self.assertIn("flux_enabled", payload)
         self.assertIn("batch-processing", payload["features"])
         self.assertEqual(payload["database_engine"], "sqlite")
+
+    def test_health_endpoint_returns_structured_payload(self):
+        client = TestClient(create_app())
+        response = client.get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("batch-processing", payload["features"])
+        self.assertIsInstance(payload["database_enabled"], bool)
 
     def test_authenticate_or_create_user_persists_user(self):
         user = authenticate_or_create_user("codex-demo", "demo123")

@@ -215,5 +215,10 @@ outputs/demo-e33c4f988a_illustration_slide_1.svg
 /outputs
 /data/uploads
 *.json
-/docs
+/docs/*
+!/docs/agents/
+!/docs/agents/**
+!/docs/adr/
+!/docs/adr/**
 /graphify-out
+/docs

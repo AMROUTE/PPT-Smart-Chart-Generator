@@ -12,6 +12,7 @@
   - 当前页实时预览
   - 图表预览
   - 配图预览
+  - PPT 页码范围批量处理
   - 进度条、阶段状态、日志回显
   - 文本演示模式
   - 图表类型手动修正
@@ -24,7 +25,7 @@
   - 配图生成
   - 增强版 PPT 导出
   - 图表与配图写回 PPT
-  - `/api/health`、`/api/process`、`/api/demo-chart`、`/api/slide-preview`
+  - `/api/health`、`/api/process`、`/api/process-batch`、`/api/demo-chart`、`/api/slide-preview`
 - 图表模块当前已支持多种类型：
   - `bar`
   - `line`
@@ -113,6 +114,7 @@ npm run dev
 - 上传 `.pptx`
 - 自动生成第一页预览
 - 调整页码时实时查看当前页
+- 按页码范围批量生成图表、配图和合并版 PPT
 - 选择语义分析模式
 - 手动修正图表类型
 - 选择配图风格和配图模型

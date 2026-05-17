@@ -23,6 +23,8 @@ export function requestProcessBatch(formData) {
   return request("/api/process-batch", { method: "POST", body: formData });
 }
 
+export const requestBatchProcess = requestProcessBatch;
+
 export function requestDemo(formData) {
   return request("/api/demo-chart", { method: "POST", body: formData });
 }

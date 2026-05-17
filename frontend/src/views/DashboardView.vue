@@ -13,21 +13,20 @@ import {
   semanticModeOptions,
 } from "../config/options";
 import { useUserSettings } from "../composables/useUserSettings";
-import { requestDemo, requestProcess, requestProcessBatch, requestSlideOutline, requestSlidePreview } from "../services/api";
+import { requestBatchProcess, requestDemo, requestProcess, requestSlideOutline, requestSlidePreview } from "../services/api";
 
 const { settings } = useUserSettings();
 
 const file = ref(null);
 const slideNumber = ref(1);
-const batchSlideNumbers = ref("");
-const pptProcessMode = ref("single");
-const selectedBatchSlideNumber = ref(0);
 const loading = ref(false);
 const errorMessage = ref("");
 const response = ref(null);
+const batchResult = ref(null);
 const activeMode = ref("ppt");
 const demoText = ref("营收: 120\n成本: 80\n利润: 40");
 const demoLoading = ref(false);
+const batchLoading = ref(false);
 const progressValue = ref(0);
 const stageCards = ref([]);
 const semanticMode = ref(settings.defaultSemanticMode);
@@ -35,6 +34,8 @@ const chartTypeOverride = ref("auto");
 const chartTheme = ref("tech");
 const illustrationStyle = ref(settings.defaultIllustrationStyle);
 const imageModel = ref(settings.defaultImageModel);
+const batchStart = ref(1);
+const batchEnd = ref(1);
 const slidePreviewUrl = ref("");
 const slidePreviewLoading = ref(false);
 const slidePreviewError = ref("");
@@ -74,18 +75,10 @@ const fileInfo = computed(() => {
   };
 });
 
-const batchResult = computed(() => response.value?.slides ? response.value : null);
-const selectedBatchSlideResult = computed(() => {
-  if (!batchResult.value?.slides?.length) {
-    return null;
-  }
-  const selected = selectedBatchSlideNumber.value;
-  return batchResult.value.slides.find((item) => Number(item.current_slide ?? item.slide_number) === selected) ?? batchResult.value.slides[batchResult.value.slides.length - 1] ?? null;
-});
-const pipelineResult = computed(() => response.value?.pipeline ?? selectedBatchSlideResult.value ?? null);
+const pipelineResult = computed(() => response.value?.pipeline ?? null);
 const chartPreviewUrl = computed(() => pipelineResult.value?.chart_image_url ?? "");
 const illustrationPreviewUrl = computed(() => pipelineResult.value?.illustration_image_url ?? "");
-const downloadUrl = computed(() => response.value?.final_pptx_url ?? pipelineResult.value?.final_pptx_url ?? "");
+const downloadUrl = computed(() => pipelineResult.value?.final_pptx_url ?? "");
 const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
 const intentInfo = computed(() => pipelineResult.value?.intent ?? null);
 const illustrationMeta = computed(() => pipelineResult.value?.illustration_meta ?? null);
@@ -119,7 +112,14 @@ const imageModelLabel = computed(
 );
 const hasVisualOutput = computed(() => Boolean(chartPreviewUrl.value || illustrationPreviewUrl.value));
 const hasPipelineOutput = computed(() => Boolean(stageCards.value.length || recentLogs.value.length));
-const isBatchMode = computed(() => activeMode.value === "ppt" && pptProcessMode.value === "batch");
+const batchDownloadUrl = computed(() => batchResult.value?.batch?.final_pptx_url ?? "");
+const batchStatusText = computed(() => {
+  const batch = batchResult.value?.batch;
+  if (!batch) {
+    return "尚未批量处理";
+  }
+  return `${batch.success_count}/${batch.total_slides} 页成功`;
+});
 const currentStudioLabel = computed(
   () => studioTabs.find((item) => item.key === studioPanel.value)?.label ?? "总览",
 );
@@ -150,7 +150,6 @@ function appendPersonalSettings(formData) {
 async function submitForm() {
   errorMessage.value = "";
   response.value = null;
-  selectedBatchSlideNumber.value = 0;
   startProgress();
 
   if (!file.value) {
@@ -173,6 +172,7 @@ async function submitForm() {
   try {
     const payload = await requestProcess(formData);
     response.value = payload;
+    batchResult.value = null;
     finalizeProgress(payload.pipeline);
     studioPanel.value = payload.pipeline?.illustration_image_url ? "illustration" : "chart";
   } catch (error) {
@@ -186,7 +186,6 @@ async function submitForm() {
 async function runDemo() {
   errorMessage.value = "";
   response.value = null;
-  selectedBatchSlideNumber.value = 0;
   startProgress();
   demoLoading.value = true;
 
@@ -202,6 +201,7 @@ async function runDemo() {
   try {
     const payload = await requestDemo(formData);
     response.value = payload;
+    batchResult.value = null;
     finalizeProgress(payload.pipeline);
     studioPanel.value = payload.pipeline?.illustration_image_url ? "illustration" : "chart";
   } catch (error) {
@@ -209,48 +209,6 @@ async function runDemo() {
     stopProgress(true);
   } finally {
     demoLoading.value = false;
-  }
-}
-
-async function submitBatchForm() {
-  errorMessage.value = "";
-  response.value = null;
-  selectedBatchSlideNumber.value = 0;
-  startProgress();
-
-  if (!file.value) {
-    errorMessage.value = "Please upload a PPTX file first.";
-    stopProgress(true);
-    return;
-  }
-  if (!batchSlideNumbers.value.trim()) {
-    errorMessage.value = "Please enter batch slide numbers, for example: 1,2,3.";
-    stopProgress(true);
-    return;
-  }
-
-  loading.value = true;
-  const formData = new FormData();
-  formData.append("file", file.value);
-  formData.append("slide_numbers", batchSlideNumbers.value.trim());
-  formData.append("semantic_mode", semanticMode.value);
-  formData.append("chart_type_override", chartTypeOverride.value);
-  formData.append("chart_theme", chartTheme.value);
-  formData.append("illustration_style", illustrationStyle.value);
-  formData.append("image_model", imageModel.value);
-  appendPersonalSettings(formData);
-
-  try {
-    const payload = await requestProcessBatch(formData);
-    response.value = payload;
-    selectedBatchSlideNumber.value = Number(payload.slides?.[payload.slides.length - 1]?.current_slide ?? payload.slides?.[payload.slides.length - 1]?.slide_number ?? 0);
-    finalizeProgress(payload.slides?.[payload.slides.length - 1]);
-    studioPanel.value = "chart";
-  } catch (error) {
-    errorMessage.value = error.message;
-    stopProgress(true);
-  } finally {
-    loading.value = false;
   }
 }
 
@@ -262,10 +220,10 @@ function handleSelectedFile(selected) {
   slideOutline.value = [];
   slideCount.value = 0;
   slideNumber.value = 1;
-  batchSlideNumbers.value = "";
-  pptProcessMode.value = "single";
-  selectedBatchSlideNumber.value = 0;
+  batchStart.value = 1;
+  batchEnd.value = 1;
   response.value = null;
+  batchResult.value = null;
   studioPanel.value = "overview";
   if (file.value) {
     fetchSlidePreview(true);
@@ -294,6 +252,9 @@ async function fetchSlidePreview(forceUpload = false) {
     }
     uploadToken.value = payload.upload_token || uploadToken.value;
     slideCount.value = payload.slide_count || 0;
+    if (payload.slide_count && batchEnd.value <= 1) {
+      batchEnd.value = payload.slide_count;
+    }
     slidePreviewUrl.value = payload.preview_image_url || "";
     if (!slideOutline.value.length || forceUpload) {
       await fetchSlideOutline();
@@ -321,6 +282,9 @@ async function fetchSlideOutline() {
     const payload = await requestSlideOutline(formData);
     slideOutline.value = payload.slides || [];
     slideCount.value = payload.slide_count || slideCount.value;
+    if (payload.slide_count && batchEnd.value <= 1) {
+      batchEnd.value = payload.slide_count;
+    }
   } catch (error) {
     slidePreviewError.value = error.message;
   }
@@ -369,17 +333,69 @@ function stopProgress(reset) {
 }
 
 function rerunCurrentMode() {
-  if (loading.value || demoLoading.value) {
+  if (loading.value || demoLoading.value || batchLoading.value) {
     return;
   }
   if (activeMode.value === "ppt") {
-    if (pptProcessMode.value === "batch") {
-      submitBatchForm();
-    } else {
-      submitForm();
-    }
+    submitForm();
   } else {
     runDemo();
+  }
+}
+
+async function submitBatch() {
+  errorMessage.value = "";
+  response.value = null;
+  batchResult.value = null;
+  startProgress();
+
+  if (activeMode.value !== "ppt" || (!file.value && !uploadToken.value)) {
+    errorMessage.value = "请先上传 PPTX 文件。";
+    stopProgress(true);
+    return;
+  }
+
+  const start = Number(batchStart.value || 1);
+  const end = Number(batchEnd.value || slideCount.value || start);
+  if (start < 1 || end < start) {
+    errorMessage.value = "请填写有效的批量页码范围。";
+    stopProgress(true);
+    return;
+  }
+
+  batchLoading.value = true;
+  const formData = new FormData();
+  if (uploadToken.value) {
+    formData.append("upload_token", uploadToken.value);
+  } else {
+    formData.append("file", file.value);
+  }
+  formData.append("slide_start", String(start));
+  formData.append("slide_end", String(end));
+  formData.append("semantic_mode", semanticMode.value);
+  formData.append("chart_type_override", chartTypeOverride.value);
+  formData.append("chart_theme", chartTheme.value);
+  formData.append("illustration_style", illustrationStyle.value);
+  formData.append("image_model", imageModel.value);
+  appendPersonalSettings(formData);
+
+  try {
+    const payload = await requestBatchProcess(formData);
+    batchResult.value = payload;
+    const lastSuccessful = [...(payload.batch?.slides || [])].reverse().find((item) => item.pipeline);
+    if (lastSuccessful?.pipeline) {
+      response.value = { pipeline: lastSuccessful.pipeline };
+      finalizeProgress(lastSuccessful.pipeline);
+    } else {
+      stopProgress(false);
+      progressValue.value = 100;
+    }
+    studioPanel.value = "pipeline";
+  } catch (error) {
+    errorMessage.value = error.message;
+    stopProgress(true);
+  } finally {
+    batchLoading.value = false;
   }
 }
 
@@ -388,15 +404,8 @@ function selectOutlineSlide(targetSlide) {
   studioPanel.value = "outline";
 }
 
-function selectBatchSlide(targetSlide) {
-  selectedBatchSlideNumber.value = Number(targetSlide);
-  if (selectedBatchSlideResult.value) {
-    studioPanel.value = selectedBatchSlideResult.value.illustration_image_url ? "illustration" : "chart";
-  }
-}
-
 watch(slideNumber, () => {
-  if (activeMode.value === "ppt" && pptProcessMode.value === "single" && canPreview.value) {
+  if (activeMode.value === "ppt" && canPreview.value) {
     fetchSlidePreview(false);
   }
 });
@@ -506,25 +515,15 @@ watch(
                 />
               </label>
 
-              <label v-if="activeMode === 'ppt'" class="block space-y-2">
-                <span class="text-sm font-medium text-gray-500">Batch Slide Numbers</span>
-                <input
-                  v-model="batchSlideNumbers"
-                  type="text"
-                  placeholder="e.g. 1,2,3"
-                  class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
-                />
-              </label>
-
               <div class="grid gap-3">
                 <button
                   type="button"
                   class="rounded-full bg-gray-900 px-5 py-3 text-sm font-medium text-white transition-all duration-200 ease-in-out hover:bg-gray-800 active:scale-[0.98]"
-                  :disabled="loading || demoLoading"
+                  :disabled="loading || demoLoading || batchLoading"
                   @click="activeMode === 'ppt' ? submitForm() : runDemo()"
                 >
                   {{
-                    loading || demoLoading
+                    loading || demoLoading || batchLoading
                       ? "处理中..."
                       : activeMode === "ppt"
                         ? "一键生成图表与配图"
@@ -534,11 +533,61 @@ watch(
                 <button
                   type="button"
                   class="rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition-transform duration-150 ease-in-out hover:bg-gray-50 active:scale-[0.98]"
-                  :disabled="loading || demoLoading"
+                  :disabled="loading || demoLoading || batchLoading"
                   @click="rerunCurrentMode"
                 >
                   重新生成当前结果
                 </button>
+              </div>
+
+              <div v-if="activeMode === 'ppt'" class="rounded-2xl border border-gray-100 bg-white/80 p-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold tracking-tight text-gray-900">批量处理</p>
+                    <p class="mt-1 text-sm text-gray-500">第 {{ batchStart || 1 }} - {{ batchEnd || slideCount || batchStart || 1 }} 页</p>
+                  </div>
+                  <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">{{ batchStatusText }}</span>
+                </div>
+                <div class="mt-4 grid grid-cols-2 gap-3">
+                  <label class="block space-y-2">
+                    <span class="text-sm font-medium text-gray-500">起始页</span>
+                    <input
+                      v-model.number="batchStart"
+                      type="number"
+                      min="1"
+                      :max="slideCount || undefined"
+                      class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300"
+                    />
+                  </label>
+                  <label class="block space-y-2">
+                    <span class="text-sm font-medium text-gray-500">结束页</span>
+                    <input
+                      v-model.number="batchEnd"
+                      type="number"
+                      min="1"
+                      :max="slideCount || undefined"
+                      class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300"
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  class="mt-4 w-full rounded-full border border-gray-200 bg-gray-950 px-5 py-3 text-sm font-medium text-white transition-transform duration-150 ease-in-out hover:bg-gray-800 active:scale-[0.98]"
+                  :disabled="loading || demoLoading || batchLoading || (!file && !uploadToken)"
+                  @click="submitBatch"
+                >
+                  {{ batchLoading ? "批量处理中..." : "批量生成合并 PPT" }}
+                </button>
+                <a
+                  v-if="batchDownloadUrl"
+                  :href="batchDownloadUrl"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="mt-3 flex items-center justify-between rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-700 transition-all duration-200 hover:bg-white"
+                >
+                  <span>下载批量增强版 PPT</span>
+                  <span class="text-xs text-gray-400">PPTX</span>
+                </a>
               </div>
 
               <details class="group relative z-20 overflow-visible rounded-2xl border border-gray-100 bg-white/80 p-4">
@@ -555,7 +604,7 @@ watch(
                 </summary>
 
                 <div class="grid grid-rows-[0fr] transition-all duration-300 ease-out group-open:grid-rows-[1fr]">
-                  <div class="overflow-visible pb-1">
+                  <div class="overflow-hidden">
                     <div class="mt-5 grid gap-4">
                       <label class="block space-y-2">
                         <span class="text-sm font-medium text-gray-500">语义分析模式</span>
@@ -565,6 +614,11 @@ watch(
                       <label class="block space-y-2">
                         <span class="text-sm font-medium text-gray-500">图表类型修正</span>
                         <SelectMenu v-model="chartTypeOverride" :options="chartTypeOptions" />
+                      </label>
+
+                      <label class="block space-y-2">
+                        <span class="text-sm font-medium text-gray-500">图表主题</span>
+                        <SelectMenu v-model="chartTheme" :options="chartThemeOptions" />
                       </label>
 
                       <label class="block space-y-2">
@@ -861,51 +915,6 @@ watch(
                 <div class="studio-scrollbar max-h-[52rem] overflow-auto">
                   <SlideOutlinePanel :slides="slideOutline" :active-slide="slideNumber" @select-slide="selectOutlineSlide" />
                 </div>
-              </div>
-            </div>
-          </section>
-
-          <section v-if="batchResult" class="rounded-[28px] border border-transparent bg-white/75 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-sm font-medium text-gray-500">Batch Summary</p>
-                <h3 class="mt-2 text-2xl font-semibold tracking-tight text-gray-900">Multi-slide Result Summary</h3>
-              </div>
-              <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">{{ batchResult.processed_count }} slides</span>
-            </div>
-
-            <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
-                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Requested Slides</p>
-                <p class="mt-2 text-sm font-semibold text-gray-900">{{ batchResult.slide_numbers?.join(', ') || '-' }}</p>
-              </div>
-              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
-                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Processed Count</p>
-                <p class="mt-2 text-sm font-semibold text-gray-900">{{ batchResult.processed_count }} / {{ batchResult.slide_numbers?.length || 0 }}</p>
-              </div>
-              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
-                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Selected Slide</p>
-                <p class="mt-2 text-sm font-semibold text-gray-900">{{ pipelineResult?.current_slide || '-' }}</p>
-              </div>
-              <div class="rounded-2xl border border-gray-100 bg-white/90 p-4">
-                <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Final Output</p>
-                <p class="mt-2 break-all text-sm font-semibold text-gray-900">{{ batchResult.final_pptx_path || '-' }}</p>
-              </div>
-            </div>
-
-            <div class="mt-6">
-              <p class="text-sm font-medium text-gray-500">Slides</p>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <button
-                  v-for="item in batchResult.slides"
-                  :key="item.current_slide || item.slide_number"
-                  type="button"
-                  class="rounded-full border px-4 py-2 text-sm transition-all duration-200 ease-in-out"
-                  :class="Number(item.current_slide || item.slide_number) === Number(pipelineResult?.current_slide) ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'"
-                  @click="selectBatchSlide(item.current_slide || item.slide_number)"
-                >
-                  Slide {{ item.current_slide || item.slide_number }}
-                </button>
               </div>
             </div>
           </section>
