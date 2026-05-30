@@ -89,6 +89,12 @@ def evaluate():
     print(f"总样本数：{total}")
     print(f"预测正确：{correct}")
     print(f"准确率：{accuracy:.2%}")
+    target_accuracy = 0.88
+
+    if accuracy >= target_accuracy:
+        print("PASS: Accuracy requirement satisfied. Target >= 88%.")
+    else:
+        print("FAIL: Accuracy requirement not satisfied. Target >= 88%.")
     print(f"测试报告已保存到：{report_path}")
 
     if error_by_label:

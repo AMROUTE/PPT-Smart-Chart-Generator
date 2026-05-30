@@ -8,6 +8,8 @@ from openai import OpenAI
 
 from vector_rag import retrieve_similar_cases, format_cases_for_prompt
 
+PROMPT_VERSION = "V4.0 Final - RAG Enhanced"
+
 load_dotenv()
 
 API_KEY = os.getenv("OPENAI_API_KEY")
