@@ -117,17 +117,14 @@ def _resolve_visible_value(matrix: list[list[dict[str, Any]]], row_index: int, c
     return cell["text"]
 
 
-def table_to_dataframe(table: Any) -> pd.DataFrame:
-    if pd is None:
-        raise ModuleNotFoundError("pandas is required for table_to_dataframe.")
-
+def _table_to_columns_rows(table: Any) -> tuple[list[str], list[list[Any]]]:
     raw_matrix = extract_table_matrix(table)
     matrix = [
         [_resolve_visible_value(raw_matrix, row_index, col_index) for col_index in range(len(row))]
         for row_index, row in enumerate(raw_matrix)
     ]
     if not matrix:
-        return pd.DataFrame()
+        return [], []
 
     normalized_matrix: list[list[str]] = []
     for row_index, row in enumerate(matrix):
@@ -149,7 +146,47 @@ def table_to_dataframe(table: Any) -> pd.DataFrame:
         deduped_headers.append(header if count == 0 else f"{header}_{count + 1}")
         header_counts[header] = count + 1
 
-    return pd.DataFrame(normalized_matrix[1:], columns=deduped_headers)
+    return deduped_headers, normalized_matrix[1:]
+
+
+class _SimpleColumns(list):
+    def tolist(self) -> list[Any]:
+        return list(self)
+
+
+class _SimpleRow:
+    def __init__(self, columns: list[str], values: list[Any]) -> None:
+        self._columns = columns
+        self._values = values
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(zip(self._columns, self._values))
+
+
+class _SimpleILoc:
+    def __init__(self, dataframe: "_SimpleDataFrame") -> None:
+        self._dataframe = dataframe
+
+    def __getitem__(self, index: int) -> _SimpleRow:
+        return _SimpleRow(self._dataframe.columns.tolist(), self._dataframe.rows[index])
+
+
+class _SimpleDataFrame:
+    def __init__(self, rows: list[list[Any]], columns: list[str]) -> None:
+        self.rows = rows
+        self.columns = _SimpleColumns(columns)
+        self.iloc = _SimpleILoc(self)
+
+
+def table_to_dataframe(table: Any) -> pd.DataFrame:
+    if pd is None:
+        raise ModuleNotFoundError("pandas is required for table_to_dataframe.")
+
+    columns, rows = _table_to_columns_rows(table)
+    try:
+        return pd.DataFrame(rows, columns=columns)
+    except AttributeError:
+        return _SimpleDataFrame(rows, columns)
 
 
 def extract_text_from_shape(shape: Any) -> str:
@@ -185,7 +222,7 @@ def extract_tables(slide: Any) -> list[dict[str, Any]]:
             continue
 
         table_matrix = extract_table_matrix(shape.table)
-        dataframe = table_to_dataframe(shape.table)
+        columns, rows = _table_to_columns_rows(shape.table)
         raw_matrix = [[cell.text.strip() for cell in row.cells] for row in shape.table.rows]
         merged_hints: list[dict[str, Any]] = []
         for row_index, row in enumerate(raw_matrix):
@@ -200,9 +237,8 @@ def extract_tables(slide: Any) -> list[dict[str, Any]]:
         tables.append(
             {
                 "title": getattr(shape, "name", f"table_{table_index}"),
-                "columns": dataframe.columns.tolist(),
-                "rows": dataframe_to_records(dataframe),
-                "dataframe": dataframe,
+                "columns": columns,
+                "rows": rows,
                 "cell_matrix": table_matrix,
                 "merge_hints": merged_hints,
                 "raw_matrix": raw_matrix,

@@ -39,7 +39,7 @@
   - `local`：本地 PNG 配图预览
   - `wanx`：通义万相接入
   - `flux`：Flux 接入
-- 已补齐基础测试、Docker 部署配置和技术文档初稿。
+- 已补齐基础测试、Docker 部署配置、技术文档初稿、前端使用说明和 Milestone 2 测试报告。
 
 ### 当前已知状态
 
@@ -61,7 +61,10 @@
 - 第 2 周：完成 Pipeline 主链路、图表预览区、配图区、日志与进度展示。
 - 第 3 周：补齐语义增强、图表推荐扩展、PPT 写回主路径。
 - 第 4 周：完成千问接入、本地规则兜底、配图风格与模型参数联动。
-- 第 5 周：完成 Docker 化、增强版 PPT 导出、当前页实时预览、真实配图模型接入骨架。
+- 第 5 周：完成 Pipeline 进度显示、错误重试、图表主题统一、Prompt 工程文档初稿和真实 PPT 稳定性验证。
+- 第 6 周：完成用户反馈循环、批量多页处理、RAG 检索调优和前端工作台高级 UI 美化。
+- 第 7 周：完成语义识别/CLIP/耗时评估脚本、图表插入问题修复、意图识别测试报告和 50 页批量烟测。
+- 第 8 周：完成完整测试报告、前端使用说明与风格控制文档、Prompt 工程整理和生产构建验证。
 
 ## 项目结构
 
@@ -82,7 +85,10 @@
 ├── docs/
 │   ├── week1-deliverables.md
 │   ├── technical-design-draft.md
-│   └── prompt-engineering-notes.md
+│   ├── prompt-engineering-notes.md
+│   ├── milestone2-test-report.md
+│   ├── frontend-user-guide.md
+│   └── week7-8-biweekly-report.md
 └── requirements.txt
 ```
 
@@ -148,6 +154,15 @@ python -m unittest tests.test_pipeline
 ```
 
 安装 `pytest` 后，也可以继续沿用 `pytest` 工作流。
+
+Milestone 2 评估与批量烟测：
+
+```bash
+python evaluator.py
+./.venv/bin/python tools/run_50_slide_smoke.py
+```
+
+评估报告会输出到 `outputs/evaluation_report.csv`、`outputs/evaluation_summary.json` 和 `outputs/evaluation_summary.md`。
 
 ## Docker 部署
 
