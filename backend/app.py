@@ -6,11 +6,13 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.database import authenticate_or_create_user, fetch_processing_job, init_db, list_recent_jobs
 from backend.services import (
     allowed_file,
+    apply_batch_layout_overrides,
     build_health_payload,
     build_slide_preview,
     ensure_output_dir,
@@ -23,6 +25,23 @@ from backend.services import (
     path_to_asset_url,
     save_upload,
 )
+
+
+class BatchLayoutSlide(BaseModel):
+    slide_number: int
+    chart_path: str = ""
+    illustration_path: str = ""
+    title: str = ""
+    subtitle: str = ""
+    intent: dict[str, Any] = Field(default_factory=dict)
+    shapes: list[dict[str, Any]] = Field(default_factory=list)
+    layout_override: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchLayoutRequest(BaseModel):
+    source_pptx_path: str
+    batch_request_id: str = ""
+    slides: list[BatchLayoutSlide]
 
 
 def create_app() -> FastAPI:
@@ -170,6 +189,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Batch processing failed: {exc}") from exc
+
+    @app.post("/api/batch-layout")
+    async def apply_batch_layout(request: BatchLayoutRequest) -> JSONResponse:
+        try:
+            payload = apply_batch_layout_overrides(
+                request.source_pptx_path,
+                [slide.dict() for slide in request.slides],
+                batch_request_id=request.batch_request_id,
+            )
+            return JSONResponse(payload)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Batch layout write-back failed: {exc}") from exc
 
     @app.post("/api/demo-chart")
     async def demo_chart(

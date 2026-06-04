@@ -8,6 +8,10 @@ defineProps({
     type: Object,
     default: null,
   },
+  chartSpec: {
+    type: Object,
+    default: null,
+  },
   stageCards: {
     type: Array,
     default: () => [],
@@ -69,10 +73,48 @@ function scoreText(value) {
   return value == null ? "—" : String(value);
 }
 
+function percentText(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number * 100)}%` : String(value);
+}
+
 function confidenceText(value) {
   if (value == null) return "—";
   const number = Number(value);
   return Number.isFinite(number) ? `${Math.round(number * 100)}%` : String(value);
+}
+
+function qualityComponentItems(meta) {
+  const components = meta?.quality_components || {};
+  return Object.entries(components)
+    .filter(([key]) => key !== "score")
+    .map(([key, value]) => ({ key, value }));
+}
+
+function featureItems(meta) {
+  return meta?.local_render_features || [];
+}
+
+function componentBadgeClass(value) {
+  return value ? "border-green-200 bg-green-50 text-green-700" : "border-gray-200 bg-gray-50 text-gray-500";
+}
+
+function chartQualityStatusText(status) {
+  const map = {
+    pass: "通过",
+    attention: "需留意",
+    review: "待复核",
+    fallback: "Fallback",
+  };
+  return map[status] ?? "待生成";
+}
+
+function chartQualityBadgeClass(status) {
+  if (status === "pass") return "bg-green-100 text-green-700";
+  if (status === "attention") return "bg-amber-100 text-amber-700";
+  if (status === "review" || status === "fallback") return "bg-red-100 text-red-700";
+  return "bg-gray-100 text-gray-600";
 }
 </script>
 
@@ -115,6 +157,52 @@ function confidenceText(value) {
       </p>
     </div>
 
+    <div v-if="chartSpec" class="mt-5 rounded-2xl border border-gray-100 bg-white/90 p-5">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Chart Quality</p>
+          <h3 class="mt-2 text-base font-semibold tracking-tight text-gray-900">图表生成质量</h3>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span class="w-fit rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700">
+            {{ scoreText(chartSpec.quality_score) }} / 10
+          </span>
+          <span class="w-fit rounded-full px-3 py-1 text-xs font-medium" :class="chartQualityBadgeClass(chartSpec.quality_status)">
+            {{ chartQualityStatusText(chartSpec.quality_status) }}
+          </span>
+        </div>
+      </div>
+
+      <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div class="rounded-2xl bg-gray-50 px-4 py-3">
+          <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Data Points</p>
+          <p class="mt-2 text-sm font-semibold text-gray-900">{{ chartSpec.data_points ?? "—" }}</p>
+        </div>
+        <div class="rounded-2xl bg-gray-50 px-4 py-3">
+          <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Series</p>
+          <p class="mt-2 text-sm font-semibold text-gray-900">{{ chartSpec.series_count ?? "—" }}</p>
+        </div>
+        <div class="rounded-2xl bg-gray-50 px-4 py-3">
+          <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Coverage</p>
+          <p class="mt-2 text-sm font-semibold text-gray-900">{{ percentText(chartSpec.quality_checks?.numeric_coverage) }}</p>
+        </div>
+        <div class="rounded-2xl bg-gray-50 px-4 py-3">
+          <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Readability</p>
+          <p class="mt-2 text-sm font-semibold text-gray-900">{{ chartSpec.quality_checks?.readability || "full" }}</p>
+        </div>
+      </div>
+
+      <div v-if="chartSpec.warnings?.length" class="mt-4 rounded-2xl bg-amber-50 px-4 py-3">
+        <p class="text-[11px] uppercase tracking-[0.16em] text-amber-500">Warnings</p>
+        <p class="mt-2 text-sm leading-6 text-amber-700">{{ chartSpec.warnings.join("；") }}</p>
+      </div>
+
+      <div v-if="chartSpec.review_reason" class="mt-4 rounded-2xl bg-gray-50 px-4 py-3">
+        <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Quality Gate</p>
+        <p class="mt-2 text-sm leading-6 text-gray-600">{{ chartSpec.review_reason }}</p>
+      </div>
+    </div>
+
     <div v-if="illustrationMeta" class="mt-5 rounded-2xl border border-gray-100 bg-white/90 p-5">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -151,6 +239,33 @@ function confidenceText(value) {
         <p v-if="illustrationMeta.regenerate_reason" class="mt-2 text-sm leading-6 text-gray-500">
           {{ illustrationMeta.regenerate_reason }}
         </p>
+      </div>
+
+      <div v-if="qualityComponentItems(illustrationMeta).length" class="mt-4 rounded-2xl bg-gray-50 px-4 py-3">
+        <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Quality Components</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <span
+            v-for="item in qualityComponentItems(illustrationMeta)"
+            :key="item.key"
+            class="rounded-full border px-2.5 py-1 text-xs font-medium"
+            :class="componentBadgeClass(item.value)"
+          >
+            {{ item.key }}
+          </span>
+        </div>
+      </div>
+
+      <div v-if="featureItems(illustrationMeta).length" class="mt-4 rounded-2xl bg-gray-50 px-4 py-3">
+        <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Local Render Features</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <span
+            v-for="feature in featureItems(illustrationMeta)"
+            :key="feature"
+            class="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700"
+          >
+            {{ feature }}
+          </span>
+        </div>
       </div>
     </div>
 

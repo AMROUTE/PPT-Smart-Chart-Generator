@@ -210,11 +210,19 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .DS_Store
-.DS_Store
 outputs/demo-e33c4f988a_illustration_slide_1.svg
 /outputs
 /data/uploads
 /backend/data/
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite
+data/*.sqlite3
+data/*.sqlite3-journal
+data/*.sqlite3-shm
+data/*.sqlite3-wal
 *.json
 /docs/*
 !/docs/agents/
@@ -243,6 +251,7 @@ outputs/demo-e33c4f988a_illustration_slide_1.svg
 !/docs/milestone2-manual-review-scorecard.md
 !/docs/milestone2-api-reference.md
 !/docs/milestone2-layout-prefill-report.md
+!/docs/milestone2-quality-gallery-report.md
 !/docs/final-prompt-template.md
 !/docs/frontend-user-guide.md
 !/docs/screenshots/
@@ -252,5 +261,7 @@ outputs/demo-e33c4f988a_illustration_slide_1.svg
 !/docs/screenshots/m2-mobile-workspace.png
 !/docs/screenshots/m2-mobile-logs.png
 !/docs/screenshots/m2-mobile-settings.png
+!/docs/quality-gallery/
+!/docs/quality-gallery/**
 /docs/agents/
 /docs/adr/

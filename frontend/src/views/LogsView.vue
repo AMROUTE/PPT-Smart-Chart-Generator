@@ -92,6 +92,39 @@ function actionText(action) {
   };
   return map[action] ?? action ?? "等待评分";
 }
+
+function percentText(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number * 100)}%` : "—";
+}
+
+function qualityComponentItems(meta) {
+  const components = meta?.quality_components || {};
+  return Object.entries(components)
+    .filter(([key]) => key !== "score")
+    .map(([key, value]) => ({ key, value }));
+}
+
+function componentBadgeClass(value) {
+  return value ? "border-green-200 bg-green-50 text-green-700" : "border-gray-200 bg-gray-50 text-gray-500";
+}
+
+function chartQualityStatusText(status) {
+  const map = {
+    pass: "通过",
+    attention: "需留意",
+    review: "待复核",
+    fallback: "Fallback",
+  };
+  return map[status] ?? "待生成";
+}
+
+function chartQualityBadgeClass(status) {
+  if (status === "pass") return "bg-green-100 text-green-700";
+  if (status === "attention") return "bg-amber-100 text-amber-700";
+  if (status === "review" || status === "fallback") return "bg-red-100 text-red-700";
+  return "bg-gray-100 text-gray-600";
+}
 </script>
 
 <template>
@@ -219,6 +252,46 @@ function actionText(action) {
                   </div>
                 </div>
 
+                <div v-if="detailJob.chart_spec && Object.keys(detailJob.chart_spec).length" class="mt-8 rounded-2xl border border-gray-100 bg-gray-50 p-6">
+                  <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Chart Quality</p>
+                      <h3 class="mt-2 text-sm font-semibold tracking-tight text-gray-900">图表生成质量</h3>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <span class="w-fit rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700">
+                        {{ detailJob.chart_spec.quality_score ?? "—" }} / 10
+                      </span>
+                      <span class="w-fit rounded-full px-3 py-1 text-xs font-medium" :class="chartQualityBadgeClass(detailJob.chart_spec.quality_status)">
+                        {{ chartQualityStatusText(detailJob.chart_spec.quality_status) }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                    <div class="rounded-2xl bg-white px-4 py-3">
+                      <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Data Points</p>
+                      <p class="mt-2 text-sm font-semibold text-gray-900">{{ detailJob.chart_spec.data_points ?? "—" }}</p>
+                    </div>
+                    <div class="rounded-2xl bg-white px-4 py-3">
+                      <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Series</p>
+                      <p class="mt-2 text-sm font-semibold text-gray-900">{{ detailJob.chart_spec.series_count ?? "—" }}</p>
+                    </div>
+                    <div class="rounded-2xl bg-white px-4 py-3">
+                      <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Coverage</p>
+                      <p class="mt-2 text-sm font-semibold text-gray-900">{{ percentText(detailJob.chart_spec.quality_checks?.numeric_coverage) }}</p>
+                    </div>
+                    <div class="rounded-2xl bg-white px-4 py-3">
+                      <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Readability</p>
+                      <p class="mt-2 text-sm font-semibold text-gray-900">{{ detailJob.chart_spec.quality_checks?.readability || "full" }}</p>
+                    </div>
+                  </div>
+                  <div v-if="detailJob.chart_spec.review_reason" class="mt-4 rounded-2xl bg-white px-4 py-3">
+                    <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Quality Gate</p>
+                    <p class="mt-2 text-sm leading-6 text-gray-600">{{ detailJob.chart_spec.review_reason }}</p>
+                  </div>
+                </div>
+
                 <div v-if="detailJob.illustration_meta && Object.keys(detailJob.illustration_meta).length" class="mt-8 rounded-2xl border border-gray-100 bg-gray-50 p-6">
                   <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -255,6 +328,33 @@ function actionText(action) {
                     <p v-if="detailJob.illustration_meta.regenerate_reason" class="mt-2 text-sm leading-6 text-gray-500">
                       {{ detailJob.illustration_meta.regenerate_reason }}
                     </p>
+                  </div>
+
+                  <div v-if="qualityComponentItems(detailJob.illustration_meta).length" class="mt-4 rounded-2xl bg-white px-4 py-3">
+                    <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Quality Components</p>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <span
+                        v-for="item in qualityComponentItems(detailJob.illustration_meta)"
+                        :key="item.key"
+                        class="rounded-full border px-2.5 py-1 text-xs font-medium"
+                        :class="componentBadgeClass(item.value)"
+                      >
+                        {{ item.key }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div v-if="detailJob.illustration_meta.local_render_features?.length" class="mt-4 rounded-2xl bg-white px-4 py-3">
+                    <p class="text-[11px] uppercase tracking-[0.16em] text-gray-400">Local Render Features</p>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <span
+                        v-for="feature in detailJob.illustration_meta.local_render_features"
+                        :key="feature"
+                        class="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700"
+                      >
+                        {{ feature }}
+                      </span>
+                    </div>
                   </div>
                 </div>
 

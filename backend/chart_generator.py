@@ -21,6 +21,9 @@ SUPPORTED_CHART_THEMES = ("tech", "business", "minimal", "academic")
 
 CANVAS_SIZE = (1200, 720)
 PLOT_BOUNDS = (120, 160, 1040, 560)
+MAX_CATEGORICAL_POINTS = 10
+MAX_PIE_SLICES = 6
+MAX_SCATTER_POINTS = 80
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,14 @@ class ChartGenerationResult:
     theme: str
     fallback: bool = False
     warnings: list[str] | None = None
+    data_points: int = 0
+    series_count: int = 0
+    quality_score: float = 0.0
+    quality_checks: dict[str, Any] | None = None
+    render_notes: list[str] | None = None
+    quality_status: str = "review"
+    review_required: bool = True
+    review_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +142,14 @@ class ChartGenerationResult:
             "theme": self.theme,
             "fallback": self.fallback,
             "warnings": self.warnings or [],
+            "data_points": self.data_points,
+            "series_count": self.series_count,
+            "quality_score": self.quality_score,
+            "quality_checks": self.quality_checks or {},
+            "render_notes": self.render_notes or [],
+            "quality_status": self.quality_status,
+            "review_required": self.review_required,
+            "review_reason": self.review_reason,
         }
 
 
@@ -250,16 +269,121 @@ def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) 
     return right - left, bottom - top
 
 
+def _load_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+    ]
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _shorten_text(text: Any, max_chars: int = 12) -> str:
+    value = str(text)
+    return value if len(value) <= max_chars else f"{value[: max_chars - 1]}..."
+
+
+def _format_value(value: float) -> str:
+    sign = "-" if value < 0 else ""
+    absolute = abs(value)
+    if absolute >= 1_000_000_000:
+        return f"{sign}{absolute / 1_000_000_000:.1f}B"
+    if absolute >= 1_000_000:
+        return f"{sign}{absolute / 1_000_000:.1f}M"
+    if absolute >= 1_000:
+        return f"{sign}{absolute / 1_000:.1f}K"
+    if absolute == int(absolute):
+        return f"{sign}{absolute:,.0f}"
+    return f"{sign}{absolute:.1f}"
+
+
 def _new_canvas(title: str, theme: ChartTheme) -> tuple[Image.Image, ImageDraw.ImageDraw, ImageFont.ImageFont, ImageFont.ImageFont]:
     image = Image.new("RGB", CANVAS_SIZE, theme.background)
     draw = ImageDraw.Draw(image)
-    title_font = ImageFont.load_default()
-    body_font = ImageFont.load_default()
+    title_font = _load_font(28, bold=True)
+    body_font = _load_font(16)
     draw.rounded_rectangle((32, 32, CANVAS_SIZE[0] - 32, CANVAS_SIZE[1] - 32), radius=28, fill=theme.panel, outline=theme.frame, width=3)
     draw.rounded_rectangle((80, 110, 1080, 610), radius=24, outline=theme.frame, width=2)
     draw.text((120, 70), title, fill=theme.title, font=title_font)
     draw.text((120, 92), theme.tagline, fill=theme.subtitle, font=body_font)
     return image, draw, title_font, body_font
+
+
+def _limit_records_for_chart(records: list[dict[str, Any]], chart_type: str, warnings: list[str]) -> list[dict[str, Any]]:
+    if chart_type == "pie":
+        return records
+    limit = MAX_SCATTER_POINTS if chart_type == "scatter" else MAX_PIE_SLICES if chart_type == "pie" else MAX_CATEGORICAL_POINTS
+    if chart_type in {"histogram", "box", "heatmap"}:
+        limit = max(limit, 16)
+    if len(records) <= limit:
+        return records
+    warnings.append(f"{chart_type} chart sampled {limit} of {len(records)} records to keep labels readable.")
+    return records[:limit]
+
+
+def _prepare_pie_series(labels: list[str], values: list[float], warnings: list[str]) -> tuple[list[str], list[float], list[str]]:
+    sanitized = _sanitize_pie_values(values, warnings)
+    if len(sanitized) <= MAX_PIE_SLICES:
+        return labels, sanitized, ["pie_full_slices"]
+
+    pairs = sorted(zip(labels, sanitized), key=lambda item: item[1], reverse=True)
+    top_pairs = pairs[: MAX_PIE_SLICES - 1]
+    other_pairs = pairs[MAX_PIE_SLICES - 1 :]
+    other_total = sum(value for _, value in other_pairs)
+    grouped_labels = [label for label, _ in top_pairs]
+    grouped_values = [value for _, value in top_pairs]
+    if other_total > 0:
+        grouped_labels.append("Other")
+        grouped_values.append(other_total)
+    warnings.append(f"Pie chart grouped {len(other_pairs)} small slices into Other to preserve total share.")
+    return grouped_labels, grouped_values, ["pie_other_grouped"]
+
+
+def _chart_quality_checks(records: list[dict[str, Any]], y_columns: list[str], warnings: list[str]) -> dict[str, Any]:
+    expected = max(len(records) * max(len(y_columns), 1), 1)
+    valid_values: list[float] = []
+    missing = 0
+    for record in records:
+        for column in y_columns:
+            value = _to_float(record.get(column))
+            if value is None:
+                missing += 1
+            else:
+                valid_values.append(value)
+    numeric_coverage = len(valid_values) / expected
+    unique_ratio = min(len(set(valid_values)) / max(len(valid_values), 1), 1.0)
+    point_score = min(len(records) / 5, 1.0)
+    warning_penalty = min(len(warnings) * 0.35, 1.4)
+    quality_score = max(1.0, min(10.0, 4.8 + numeric_coverage * 2.2 + unique_ratio * 1.3 + point_score * 1.4 - warning_penalty))
+    return {
+        "numeric_coverage": round(numeric_coverage, 2),
+        "valid_numeric_values": len(valid_values),
+        "missing_numeric_values": missing,
+        "unique_numeric_values": len(set(valid_values)),
+        "value_range": [_format_value(min(valid_values)), _format_value(max(valid_values))] if valid_values else [],
+        "readability": "sampled" if any("sampled" in warning.lower() for warning in warnings) else "full",
+        "quality_score": round(quality_score, 2),
+    }
+
+
+def _chart_quality_gate(fallback: bool, quality_checks: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if fallback:
+        return {"quality_status": "fallback", "review_required": True, "review_reason": "Rendered placeholder fallback chart."}
+    score = float(quality_checks.get("quality_score") or 0)
+    coverage = float(quality_checks.get("numeric_coverage") or 0)
+    if coverage < 0.75:
+        return {"quality_status": "review", "review_required": True, "review_reason": f"Numeric coverage is {coverage:.0%}, below 75%."}
+    if score < 6.5:
+        return {"quality_status": "review", "review_required": True, "review_reason": f"Quality score {score:.2f} is below 6.5."}
+    if warnings:
+        return {"quality_status": "attention", "review_required": False, "review_reason": "Warnings were recorded; inspect chart notes if this is a final report."}
+    return {"quality_status": "pass", "review_required": False, "review_reason": "Quality gate passed."}
 
 
 def _write_placeholder_chart(
@@ -286,16 +410,31 @@ def _write_placeholder_chart(
         theme=theme.key,
         fallback=True,
         warnings=warnings,
+        quality_score=1.0,
+        quality_checks={"quality_score": 1.0, "readability": "placeholder"},
+        render_notes=["placeholder"],
+        quality_status="fallback",
+        review_required=True,
+        review_reason="Rendered placeholder fallback chart.",
     )
 
 
-def _draw_axes(draw: ImageDraw.ImageDraw, theme: ChartTheme) -> None:
+def _draw_axes(draw: ImageDraw.ImageDraw, theme: ChartTheme, minimum: float | None = None, maximum: float | None = None, font: ImageFont.ImageFont | None = None) -> None:
     left, top, right, bottom = PLOT_BOUNDS
     draw.line((left, top, left, bottom), fill=theme.axis, width=3)
     draw.line((left, bottom, right, bottom), fill=theme.axis, width=3)
     for index in range(1, 5):
         y = top + (bottom - top) * index / 5
         draw.line((left, y, right, y), fill=theme.grid, width=1)
+    if minimum is None or maximum is None or font is None:
+        return
+    for index in range(0, 6):
+        ratio = index / 5
+        value = maximum - (maximum - minimum) * ratio
+        y = top + (bottom - top) * ratio
+        label = _format_value(value)
+        width, height = _text_size(draw, label, font)
+        draw.text((left - width - 14, y - height / 2), label, fill=theme.subtitle, font=font)
 
 
 def _label_x_axis(draw: ImageDraw.ImageDraw, labels: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> list[float]:
@@ -306,7 +445,7 @@ def _label_x_axis(draw: ImageDraw.ImageDraw, labels: list[str], font: ImageFont.
     for index, label in enumerate(labels):
         center = left + step * (index + 0.5)
         centers.append(center)
-        label_text = label[:10]
+        label_text = _shorten_text(label, 10)
         width, _ = _text_size(draw, label_text, font)
         draw.text((center - width / 2, bottom + 16), label_text, fill=theme.axis, font=font)
     return centers
@@ -341,10 +480,16 @@ def _draw_chart_legend(draw: ImageDraw.ImageDraw, labels: list[str], theme: Char
 
 
 def _plot_bar(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
-    _draw_axes(draw, theme)
+    minimum, maximum = _value_scale(series_values)
+    minimum = min(0.0, minimum)
+    maximum = max(0.0, maximum)
+    if minimum == maximum:
+        maximum = minimum + 1.0
+    _draw_axes(draw, theme, minimum, maximum, font)
     centers = _label_x_axis(draw, labels, font, theme)
     _draw_chart_legend(draw, y_columns, theme, font)
-    minimum, maximum = _value_scale(series_values)
+    zero_y = _value_to_y(0.0, minimum, maximum)
+    draw.line((PLOT_BOUNDS[0], zero_y, PLOT_BOUNDS[2], zero_y), fill=theme.axis, width=2)
     count = max(len(series_values[:3]), 1)
     bar_group_width = 92
     bar_width = max(14, int(bar_group_width / count) - 8)
@@ -354,14 +499,20 @@ def _plot_bar(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[
         for point_index, value in enumerate(values):
             x = centers[point_index] + offset
             y = _value_to_y(value, minimum, maximum)
-            draw.rounded_rectangle((x - bar_width / 2, y, x + bar_width / 2, PLOT_BOUNDS[3]), radius=8, fill=color)
+            bar_top = min(y, zero_y)
+            bar_bottom = max(y, zero_y)
+            draw.rounded_rectangle((x - bar_width / 2, bar_top, x + bar_width / 2, bar_bottom), radius=8, fill=color)
+            label = _format_value(value)
+            width, height = _text_size(draw, label, font)
+            label_y = max(PLOT_BOUNDS[1] + 8, bar_top - height - 6) if value >= 0 else min(PLOT_BOUNDS[3] - height, bar_bottom + 6)
+            draw.text((x - width / 2, label_y), label, fill=theme.title, font=font)
 
 
 def _plot_line(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme, filled: bool = False) -> None:
-    _draw_axes(draw, theme)
+    minimum, maximum = _value_scale(series_values)
+    _draw_axes(draw, theme, minimum, maximum, font)
     centers = _label_x_axis(draw, labels, font, theme)
     _draw_chart_legend(draw, y_columns, theme, font)
-    minimum, maximum = _value_scale(series_values)
     for series_index, values in enumerate(series_values[:3]):
         color = theme.series_colors[series_index]
         points = [(centers[index], _value_to_y(value, minimum, maximum)) for index, value in enumerate(values)]
@@ -369,8 +520,11 @@ def _plot_line(draw: ImageDraw.ImageDraw, labels: list[str], series_values: list
             polygon = [(centers[0], PLOT_BOUNDS[3]), *points, (centers[-1], PLOT_BOUNDS[3])]
             draw.polygon(polygon, fill=theme.area_fills[series_index % len(theme.area_fills)])
         draw.line(points, fill=color, width=4)
-        for x, y in points:
+        for point_index, (x, y) in enumerate(points):
             draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=color, outline=theme.panel)
+            if len(points) <= 8 or point_index in {0, len(points) - 1}:
+                label = _format_value(values[point_index])
+                draw.text((x + 8, y - 22), label, fill=theme.title, font=font)
 
 
 def _plot_pie(draw: ImageDraw.ImageDraw, labels: list[str], values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
@@ -382,29 +536,50 @@ def _plot_pie(draw: ImageDraw.ImageDraw, labels: list[str], values: list[float],
         color = theme.series_colors[index % len(theme.series_colors)]
         draw.pieslice(bbox, start=start, end=start + extent, fill=color, outline=theme.panel)
         ratio = f"{(value / total) * 100:.1f}%"
-        draw.text((700, 180 + index * 42), f"{labels[index][:10]} {ratio}", fill=theme.title, font=font)
+        draw.text((700, 180 + index * 42), f"{_shorten_text(labels[index], 14)} {ratio}", fill=theme.title, font=font)
         start += extent
 
 
-def _plot_scatter(draw: ImageDraw.ImageDraw, x_values: list[float], y_values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
-    _draw_axes(draw, theme)
+def _plot_scatter(
+    draw: ImageDraw.ImageDraw,
+    x_values: list[float],
+    y_values: list[float],
+    font: ImageFont.ImageFont,
+    theme: ChartTheme,
+    x_label: str = "X",
+    y_label: str = "Y",
+) -> None:
     x_min, x_max = min(x_values), max(x_values)
     y_min, y_max = min(y_values), max(y_values)
     if x_min == x_max:
         x_max = x_min + 1.0
     if y_min == y_max:
         y_max = y_min + 1.0
+    _draw_axes(draw, theme, y_min, y_max, font)
     left, top, right, bottom = PLOT_BOUNDS
+    if len(x_values) >= 2:
+        mean_x = sum(x_values) / len(x_values)
+        mean_y = sum(y_values) / len(y_values)
+        denominator = sum((value - mean_x) ** 2 for value in x_values)
+        if denominator:
+            slope = sum((x_value - mean_x) * (y_value - mean_y) for x_value, y_value in zip(x_values, y_values)) / denominator
+            intercept = mean_y - slope * mean_x
+
+            def map_x(value: float) -> float:
+                return left + (value - x_min) / (x_max - x_min) * (right - left - 20) + 10
+
+            y_start = _value_to_y(slope * x_min + intercept, y_min, y_max)
+            y_end = _value_to_y(slope * x_max + intercept, y_min, y_max)
+            draw.line((map_x(x_min), y_start, map_x(x_max), y_end), fill=theme.series_colors[2 % len(theme.series_colors)], width=3)
     for x_value, y_value in zip(x_values, y_values):
         x = left + (x_value - x_min) / (x_max - x_min) * (right - left - 20) + 10
         y = _value_to_y(y_value, y_min, y_max)
         draw.ellipse((x - 9, y - 9, x + 9, y + 9), fill=theme.series_colors[0], outline=theme.title)
-    draw.text((left, bottom + 16), "X", fill=theme.axis, font=font)
-    draw.text((left - 24, top), "Y", fill=theme.axis, font=font)
+    draw.text((left, bottom + 16), _shorten_text(x_label, 16), fill=theme.axis, font=font)
+    draw.text((left - 24, top), _shorten_text(y_label, 16), fill=theme.axis, font=font)
 
 
 def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
-    _draw_axes(draw, theme)
     left, _, right, bottom = PLOT_BOUNDS
     bins = min(8, max(4, len(values)))
     minimum = min(values)
@@ -416,6 +591,7 @@ def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageF
         index = min(int((value - minimum) / (maximum - minimum) * bins), bins - 1)
         counts[index] += 1
     max_count = max(counts) or 1
+    _draw_axes(draw, theme, 0, max_count, font)
     width = (right - left) / bins
     for index, count in enumerate(counts):
         bar_height = count / max_count * (bottom - PLOT_BOUNDS[1] - 20)
@@ -423,12 +599,13 @@ def _plot_histogram(draw: ImageDraw.ImageDraw, values: list[float], font: ImageF
         y0 = bottom - bar_height
         draw.rounded_rectangle((x0, y0, x0 + width - 20, bottom), radius=8, fill=theme.series_colors[1])
         draw.text((x0 + 8, bottom + 16), str(index + 1), fill=theme.axis, font=font)
+        draw.text((x0 + 8, y0 - 24), str(count), fill=theme.title, font=font)
 
 
 def _plot_box(draw: ImageDraw.ImageDraw, series_values: list[list[float]], y_columns: list[str], font: ImageFont.ImageFont, theme: ChartTheme) -> None:
-    _draw_axes(draw, theme)
-    left, _, right, bottom = PLOT_BOUNDS
     minimum, maximum = _value_scale(series_values)
+    _draw_axes(draw, theme, minimum, maximum, font)
+    left, _, right, bottom = PLOT_BOUNDS
     step = (right - left) / max(len(series_values[:3]), 1)
     for index, values in enumerate(series_values[:3]):
         sorted_values = sorted(values)
@@ -444,7 +621,7 @@ def _plot_box(draw: ImageDraw.ImageDraw, series_values: list[list[float]], y_col
         draw.line((center, _value_to_y(low, minimum, maximum), center, _value_to_y(high, minimum, maximum)), fill=color, width=4)
         draw.rectangle((box_left, _value_to_y(q3, minimum, maximum), box_right, _value_to_y(q1, minimum, maximum)), outline=color, width=4)
         draw.line((box_left, _value_to_y(median, minimum, maximum), box_right, _value_to_y(median, minimum, maximum)), fill=color, width=4)
-        draw.text((center - 18, bottom + 16), y_columns[index][:8], fill=theme.axis, font=font)
+        draw.text((center - 18, bottom + 16), _shorten_text(y_columns[index], 8), fill=theme.axis, font=font)
 
 
 def _blend_color(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
@@ -456,17 +633,20 @@ def _plot_heatmap(draw: ImageDraw.ImageDraw, records: list[dict[str, Any]], y_co
     cell_w = 140
     cell_h = 84
     grid_values = [[_to_float(record.get(column)) or 0.0 for column in y_columns[:4]] for record in records[:4]]
-    maximum = max((value for row in grid_values for value in row), default=1.0) or 1.0
+    flat_values = [value for row in grid_values for value in row]
+    minimum = min(flat_values, default=0.0)
+    maximum = max(flat_values, default=1.0) or 1.0
+    span = maximum - minimum or 1.0
     for row_index, row in enumerate(grid_values):
         for col_index, value in enumerate(row):
-            ratio = 0.0 if maximum == 0 else value / maximum
+            ratio = (value - minimum) / span
             color = _blend_color(theme.heatmap_start, theme.heatmap_end, ratio)
             x0 = left + col_index * cell_w
             y0 = top + row_index * cell_h
             draw.rounded_rectangle((x0, y0, x0 + cell_w - 12, y0 + cell_h - 12), radius=12, fill=color, outline=theme.frame)
-            draw.text((x0 + 36, y0 + 26), f"{value:g}", fill=theme.title, font=font)
+            draw.text((x0 + 30, y0 + 26), _format_value(value), fill=theme.title, font=font)
     for col_index, column in enumerate(y_columns[:4]):
-        draw.text((left + col_index * cell_w + 24, top - 28), column[:8], fill=theme.axis, font=font)
+        draw.text((left + col_index * cell_w + 24, top - 28), _shorten_text(column, 8), fill=theme.axis, font=font)
 
 
 def generate_chart(
@@ -498,6 +678,8 @@ def generate_chart(
         inferred_y_columns = _ensure_scatter_columns(records, inferred_y_columns, warnings)
     elif normalized_chart_type == "heatmap":
         inferred_y_columns = _ensure_heatmap_columns(records, inferred_y_columns, warnings)
+    original_record_count = len(records)
+    records = _limit_records_for_chart(records, normalized_chart_type, warnings)
 
     if normalized_chart_type in {"bar", "line", "pie", "area"} and inferred_x_column is None:
         warnings.append(f"{normalized_chart_type} chart has no label column; rendered placeholder chart.")
@@ -510,6 +692,23 @@ def generate_chart(
         return _write_placeholder_chart(chart_output, normalized_chart_type, chart_title, resolved_theme, "Not enough numeric values were available.", warnings)
 
     labels, series_values = _extract_series(records, inferred_x_column, inferred_y_columns)
+    chart_specific_notes: list[str] = []
+    if normalized_chart_type == "pie":
+        labels, pie_values, chart_specific_notes = _prepare_pie_series(labels, series_values[0], warnings)
+        series_values = [pie_values]
+    elif normalized_chart_type == "bar" and any(value < 0 for series in series_values for value in series):
+        chart_specific_notes.append("zero_baseline")
+    elif normalized_chart_type == "scatter":
+        chart_specific_notes.append("scatter_trendline")
+        chart_specific_notes.append("scatter_real_xy" if not any("synthetic" in warning.lower() for warning in warnings) else "scatter_synthetic_index")
+    quality_checks = _chart_quality_checks(records, inferred_y_columns, warnings)
+    quality_gate = _chart_quality_gate(False, quality_checks, warnings)
+    render_notes = [
+        "value_labels",
+        "axis_ticks",
+        "readable_label_sampling" if original_record_count != len(records) else "full_dataset_render",
+        *chart_specific_notes,
+    ]
 
     image, draw, _, body_font = _new_canvas(chart_title, resolved_theme)
     if normalized_chart_type == "bar":
@@ -517,9 +716,9 @@ def generate_chart(
     elif normalized_chart_type == "line":
         _plot_line(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme)
     elif normalized_chart_type == "pie":
-        _plot_pie(draw, labels, _sanitize_pie_values(series_values[0], warnings), body_font, resolved_theme)
+        _plot_pie(draw, labels, series_values[0], body_font, resolved_theme)
     elif normalized_chart_type == "scatter":
-        _plot_scatter(draw, series_values[0], series_values[1], body_font, resolved_theme)
+        _plot_scatter(draw, series_values[0], series_values[1], body_font, resolved_theme, inferred_y_columns[0], inferred_y_columns[1])
     elif normalized_chart_type == "area":
         _plot_line(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme, filled=True)
     elif normalized_chart_type == "histogram":
@@ -539,4 +738,12 @@ def generate_chart(
         theme=resolved_theme.key,
         fallback=False,
         warnings=warnings,
+        data_points=len(labels) if normalized_chart_type == "pie" else len(records),
+        series_count=len(inferred_y_columns),
+        quality_score=float(quality_checks["quality_score"]),
+        quality_checks=quality_checks,
+        render_notes=render_notes,
+        quality_status=quality_gate["quality_status"],
+        review_required=quality_gate["review_required"],
+        review_reason=quality_gate["review_reason"],
     )

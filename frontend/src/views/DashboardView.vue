@@ -13,7 +13,7 @@ import {
   semanticModeOptions,
 } from "../config/options";
 import { useUserSettings } from "../composables/useUserSettings";
-import { requestBatchProcess, requestDemo, requestProcess, requestSlideOutline, requestSlidePreview } from "../services/api";
+import { requestBatchLayout, requestBatchProcess, requestDemo, requestProcess, requestSlideOutline, requestSlidePreview } from "../services/api";
 
 const { settings } = useUserSettings();
 
@@ -27,6 +27,8 @@ const activeMode = ref("ppt");
 const demoText = ref("营收: 120\n成本: 80\n利润: 40");
 const demoLoading = ref(false);
 const batchLoading = ref(false);
+const batchLayoutLoading = ref(false);
+const batchLayoutDownloadUrl = ref("");
 const progressValue = ref(0);
 const stageCards = ref([]);
 const semanticMode = ref(settings.defaultSemanticMode);
@@ -43,6 +45,8 @@ const slideCount = ref(0);
 const uploadToken = ref("");
 const slideOutline = ref([]);
 const studioPanel = ref("overview");
+const activeBatchIndex = ref(0);
+const batchLayouts = ref({});
 
 const studioTabs = [
   { key: "overview", label: "总览" },
@@ -75,12 +79,26 @@ const fileInfo = computed(() => {
   };
 });
 
-const pipelineResult = computed(() => response.value?.pipeline ?? null);
+const defaultBatchLayout = {
+  chartX: 9,
+  chartY: 12,
+  chartScale: 42,
+  illustrationX: 52,
+  illustrationY: 16,
+  illustrationScale: 39,
+};
+
+const batchSlides = computed(() => batchResult.value?.batch?.slides ?? []);
+const hasBatchSlides = computed(() => batchSlides.value.length > 0);
+const activeBatchSlide = computed(() => batchSlides.value[activeBatchIndex.value] ?? null);
+const activeBatchPipeline = computed(() => activeBatchSlide.value?.pipeline ?? null);
+const pipelineResult = computed(() => activeBatchPipeline.value ?? response.value?.pipeline ?? null);
 const chartPreviewUrl = computed(() => pipelineResult.value?.chart_image_url ?? "");
 const illustrationPreviewUrl = computed(() => pipelineResult.value?.illustration_image_url ?? "");
 const downloadUrl = computed(() => pipelineResult.value?.final_pptx_url ?? "");
 const recentLogs = computed(() => pipelineResult.value?.logs ?? []);
 const intentInfo = computed(() => pipelineResult.value?.intent ?? null);
+const chartSpec = computed(() => pipelineResult.value?.chart_spec ?? null);
 const illustrationMeta = computed(() => pipelineResult.value?.illustration_meta ?? null);
 const semanticModeLabel = computed(
   () => semanticModeOptions.find((item) => item.value === semanticMode.value)?.label ?? "本地规则",
@@ -96,6 +114,15 @@ const clipScoreText = computed(() => {
 const clipScoreValue = computed(() => {
   const score = illustrationMeta.value?.clip_score ?? intentInfo.value?.clip_score;
   return score == null ? "—" : String(score);
+});
+const chartQualityText = computed(() => {
+  const score = chartSpec.value?.quality_score;
+  return score == null ? "未评分" : `${score} / 10`;
+});
+const chartCoverageText = computed(() => {
+  const coverage = chartSpec.value?.quality_checks?.numeric_coverage;
+  const number = Number(coverage);
+  return Number.isFinite(number) ? `${Math.round(number * 100)}%` : "—";
 });
 const illustrationQualityStatus = computed(() => {
   const meta = illustrationMeta.value;
@@ -168,6 +195,7 @@ const imageModelLabel = computed(
 const hasVisualOutput = computed(() => Boolean(chartPreviewUrl.value || illustrationPreviewUrl.value));
 const hasPipelineOutput = computed(() => Boolean(stageCards.value.length || recentLogs.value.length));
 const batchDownloadUrl = computed(() => batchResult.value?.batch?.final_pptx_url ?? "");
+const sourcePptxPath = computed(() => batchResult.value?.file?.source_pptx_path ?? "");
 const batchStatusText = computed(() => {
   const batch = batchResult.value?.batch;
   if (!batch) {
@@ -175,6 +203,31 @@ const batchStatusText = computed(() => {
   }
   return `${batch.success_count}/${batch.total_slides} 页成功`;
 });
+const batchPageText = computed(() => {
+  if (!hasBatchSlides.value) {
+    return "0/0";
+  }
+  return `${activeBatchIndex.value + 1}/${batchSlides.value.length}`;
+});
+const activeBatchLayoutKey = computed(() => {
+  const slide = activeBatchSlide.value;
+  return String(slide?.pipeline?.request_id ?? slide?.slide_number ?? "default");
+});
+const activeBatchLayout = computed(() => batchLayouts.value[activeBatchLayoutKey.value] ?? defaultBatchLayout);
+const chartLayerStyle = computed(() => ({
+  left: `${activeBatchLayout.value.chartX}%`,
+  top: `${activeBatchLayout.value.chartY}%`,
+  width: `${activeBatchLayout.value.chartScale}%`,
+}));
+const illustrationLayerStyle = computed(() => ({
+  left: `${activeBatchLayout.value.illustrationX}%`,
+  top: `${activeBatchLayout.value.illustrationY}%`,
+  width: `${activeBatchLayout.value.illustrationScale}%`,
+}));
+const batchLayoutText = computed(
+  () =>
+    `图表 ${activeBatchLayout.value.chartX}%/${activeBatchLayout.value.chartY}% · 配图 ${activeBatchLayout.value.illustrationX}%/${activeBatchLayout.value.illustrationY}%`,
+);
 const currentStudioLabel = computed(
   () => studioTabs.find((item) => item.key === studioPanel.value)?.label ?? "总览",
 );
@@ -376,6 +429,19 @@ function finalizeProgress(pipeline) {
     })) ?? progressTemplate.map((item) => ({ ...item, status: "completed" }));
 }
 
+function ensureBatchLayout(slide) {
+  if (!slide) {
+    return;
+  }
+  const key = String(slide.pipeline?.request_id ?? slide.slide_number ?? "default");
+  if (!batchLayouts.value[key]) {
+    batchLayouts.value = {
+      ...batchLayouts.value,
+      [key]: { ...defaultBatchLayout },
+    };
+  }
+}
+
 function stopProgress(reset) {
   if (progressTimer) {
     window.clearInterval(progressTimer);
@@ -388,7 +454,7 @@ function stopProgress(reset) {
 }
 
 function rerunCurrentMode() {
-  if (loading.value || demoLoading.value || batchLoading.value) {
+  if (loading.value || demoLoading.value || batchLoading.value || batchLayoutLoading.value) {
     return;
   }
   if (activeMode.value === "ppt") {
@@ -437,21 +503,115 @@ async function submitBatch() {
   try {
     const payload = await requestBatchProcess(formData);
     batchResult.value = payload;
-    const lastSuccessful = [...(payload.batch?.slides || [])].reverse().find((item) => item.pipeline);
-    if (lastSuccessful?.pipeline) {
-      response.value = { pipeline: lastSuccessful.pipeline };
-      finalizeProgress(lastSuccessful.pipeline);
+    activeBatchIndex.value = 0;
+    batchLayouts.value = {};
+    batchLayoutDownloadUrl.value = "";
+    const firstSuccessfulIndex = (payload.batch?.slides || []).findIndex((item) => item.pipeline);
+    if (firstSuccessfulIndex >= 0) {
+      selectBatchSlide(firstSuccessfulIndex, false);
     } else {
       stopProgress(false);
       progressValue.value = 100;
     }
-    studioPanel.value = "pipeline";
+    studioPanel.value = "overview";
   } catch (error) {
     errorMessage.value = error.message;
     stopProgress(true);
   } finally {
     batchLoading.value = false;
   }
+}
+
+async function exportBatchManualLayout() {
+  errorMessage.value = "";
+  if (!sourcePptxPath.value || !batchSlides.value.length) {
+    errorMessage.value = "请先完成一次批量生成。";
+    return;
+  }
+  const slides = batchSlides.value
+    .filter((item) => item.pipeline)
+    .map((item) => {
+      const key = String(item.pipeline?.request_id ?? item.slide_number ?? "default");
+      return {
+        slide_number: item.slide_number,
+        chart_path: item.pipeline.chart_image || "",
+        illustration_path: item.pipeline.illustration_image || "",
+        title: `第 ${item.slide_number} 页手动布局结果`,
+        subtitle: item.pipeline.intent?.reason || "手动微调后的批量生成结果。",
+        intent: item.pipeline.intent || {},
+        shapes: item.pipeline.shapes || [],
+        layout_override: batchLayouts.value[key] ?? defaultBatchLayout,
+      };
+    });
+  if (!slides.length) {
+    errorMessage.value = "当前批量结果没有可写回的成功页。";
+    return;
+  }
+  batchLayoutLoading.value = true;
+  try {
+    const payload = await requestBatchLayout({
+      source_pptx_path: sourcePptxPath.value,
+      batch_request_id: batchResult.value?.batch?.request_id || "",
+      slides,
+    });
+    batchLayoutDownloadUrl.value = payload.final_pptx_url || "";
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    batchLayoutLoading.value = false;
+  }
+}
+
+function selectBatchSlide(index, switchPanel = true) {
+  if (index < 0 || index >= batchSlides.value.length) {
+    return;
+  }
+  activeBatchIndex.value = index;
+  const slide = batchSlides.value[index];
+  ensureBatchLayout(slide);
+  if (slide?.pipeline) {
+    response.value = { pipeline: slide.pipeline };
+    finalizeProgress(slide.pipeline);
+  } else {
+    response.value = null;
+    stopProgress(false);
+    progressValue.value = 100;
+    stageCards.value = [];
+  }
+  if (slide?.slide_number) {
+    slideNumber.value = slide.slide_number;
+  }
+  if (switchPanel) {
+    studioPanel.value = "overview";
+  }
+}
+
+function moveBatchSlide(delta) {
+  selectBatchSlide(activeBatchIndex.value + delta);
+}
+
+function updateActiveBatchLayout(field, value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return;
+  }
+  const key = activeBatchLayoutKey.value;
+  batchLayouts.value = {
+    ...batchLayouts.value,
+    [key]: {
+      ...defaultBatchLayout,
+      ...(batchLayouts.value[key] ?? {}),
+      [field]: numericValue,
+    },
+  };
+}
+
+function resetActiveBatchLayout() {
+  const key = activeBatchLayoutKey.value;
+  batchLayouts.value = {
+    ...batchLayouts.value,
+    [key]: { ...defaultBatchLayout },
+  };
 }
 
 function selectOutlineSlide(targetSlide) {
@@ -755,6 +915,164 @@ watch(
               </div>
             </div>
 
+            <div v-if="hasBatchSlides" class="mt-6 rounded-[28px] border border-gray-100 bg-gray-50/80 p-5">
+              <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Batch Review</p>
+                  <h3 class="mt-2 text-2xl font-semibold tracking-tight text-gray-900">批量逐页查看</h3>
+                  <p class="mt-2 text-sm leading-6 text-gray-500">
+                    当前第 {{ activeBatchSlide?.slide_number ?? "—" }} 页 · {{ batchPageText }} · {{ activeBatchSlide?.status ?? "waiting" }}
+                  </p>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-transform duration-150 ease-in-out hover:bg-gray-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                    :disabled="activeBatchIndex <= 0"
+                    @click="moveBatchSlide(-1)"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-transform duration-150 ease-in-out hover:bg-gray-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                    :disabled="activeBatchIndex >= batchSlides.length - 1"
+                    @click="moveBatchSlide(1)"
+                  >
+                    下一页
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-transform duration-150 ease-in-out hover:bg-gray-50 active:scale-[0.98]"
+                    @click="resetActiveBatchLayout"
+                  >
+                    重置位置
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-transform duration-150 ease-in-out hover:bg-gray-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                    :disabled="batchLayoutLoading || !sourcePptxPath"
+                    @click="exportBatchManualLayout"
+                  >
+                    {{ batchLayoutLoading ? "写回中..." : "导出微调版 PPT" }}
+                  </button>
+                  <a
+                    v-if="batchLayoutDownloadUrl"
+                    :href="batchLayoutDownloadUrl"
+                    target="_blank"
+                    rel="noreferrer"
+                    class="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 transition-transform duration-150 ease-in-out hover:bg-emerald-100 active:scale-[0.98]"
+                  >
+                    下载微调版
+                  </a>
+                </div>
+              </div>
+
+              <div class="mt-5 flex gap-2 overflow-x-auto pb-1">
+                <button
+                  v-for="(item, index) in batchSlides"
+                  :key="`${item.slide_number}-${index}`"
+                  type="button"
+                  class="min-w-20 rounded-2xl border px-4 py-3 text-left text-sm transition-all duration-200 ease-out active:scale-[0.98]"
+                  :class="
+                    activeBatchIndex === index
+                      ? 'border-gray-900 bg-gray-900 text-white shadow-md'
+                      : item.status === 'failed'
+                        ? 'border-red-100 bg-red-50 text-red-600'
+                        : 'border-gray-100 bg-white text-gray-600 hover:border-gray-200 hover:text-gray-900'
+                  "
+                  @click="selectBatchSlide(index)"
+                >
+                  <span class="block text-xs opacity-60">Slide</span>
+                  <strong class="mt-1 block text-base">第 {{ item.slide_number }} 页</strong>
+                </button>
+              </div>
+
+              <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+                <div class="overflow-hidden rounded-[24px] border border-gray-100 bg-white p-4">
+                  <div class="relative aspect-video overflow-hidden rounded-[20px] bg-[linear-gradient(135deg,#f8fafc_0%,#eef2f7_100%)]">
+                    <img
+                      v-if="chartPreviewUrl"
+                      :src="chartPreviewUrl"
+                      alt="batch chart placement"
+                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg transition-all duration-200"
+                      :style="chartLayerStyle"
+                    />
+                    <img
+                      v-if="illustrationPreviewUrl"
+                      :src="illustrationPreviewUrl"
+                      alt="batch illustration placement"
+                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg transition-all duration-200"
+                      :style="illustrationLayerStyle"
+                    />
+                    <div
+                      v-if="!chartPreviewUrl && !illustrationPreviewUrl"
+                      class="absolute inset-0 flex items-center justify-center text-sm text-gray-500"
+                    >
+                      当前页未生成可预览资源
+                    </div>
+                  </div>
+                  <p class="mt-3 text-sm text-gray-500">{{ batchLayoutText }}</p>
+                </div>
+
+                <div class="rounded-[24px] border border-gray-100 bg-white p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <p class="text-xs uppercase tracking-[0.18em] text-gray-400">Placement</p>
+                      <h4 class="mt-2 text-lg font-semibold tracking-tight text-gray-900">位置微调</h4>
+                    </div>
+                    <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">可写回</span>
+                  </div>
+
+                  <div class="mt-4 space-y-4">
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>图表 X</span>
+                        <span>{{ activeBatchLayout.chartX }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="0" max="70" :value="activeBatchLayout.chartX" @input="updateActiveBatchLayout('chartX', $event.target.value)" />
+                    </label>
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>图表 Y</span>
+                        <span>{{ activeBatchLayout.chartY }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="0" max="60" :value="activeBatchLayout.chartY" @input="updateActiveBatchLayout('chartY', $event.target.value)" />
+                    </label>
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>图表缩放</span>
+                        <span>{{ activeBatchLayout.chartScale }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="24" max="70" :value="activeBatchLayout.chartScale" @input="updateActiveBatchLayout('chartScale', $event.target.value)" />
+                    </label>
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>配图 X</span>
+                        <span>{{ activeBatchLayout.illustrationX }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="0" max="72" :value="activeBatchLayout.illustrationX" @input="updateActiveBatchLayout('illustrationX', $event.target.value)" />
+                    </label>
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>配图 Y</span>
+                        <span>{{ activeBatchLayout.illustrationY }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="0" max="62" :value="activeBatchLayout.illustrationY" @input="updateActiveBatchLayout('illustrationY', $event.target.value)" />
+                    </label>
+                    <label class="block space-y-2">
+                      <span class="flex justify-between text-sm font-medium text-gray-500">
+                        <span>配图缩放</span>
+                        <span>{{ activeBatchLayout.illustrationScale }}%</span>
+                      </span>
+                      <input class="w-full accent-gray-900" type="range" min="24" max="70" :value="activeBatchLayout.illustrationScale" @input="updateActiveBatchLayout('illustrationScale', $event.target.value)" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="mt-6">
               <div
                 v-if="studioPanel === 'overview'"
@@ -801,7 +1119,7 @@ watch(
                       <span class="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600">查看流程</span>
                     </div>
 
-                    <div class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                       <div class="rounded-2xl border border-white/60 bg-white p-4">
                         <p class="text-xs uppercase tracking-[0.18em] text-gray-400">推荐图表</p>
                         <p class="mt-2 text-sm font-semibold text-gray-900">{{ intentInfo?.chart_type || "待生成" }}</p>
@@ -813,6 +1131,14 @@ watch(
                       <div class="rounded-2xl border border-white/60 bg-white p-4">
                         <p class="text-xs uppercase tracking-[0.18em] text-gray-400">配图风格</p>
                         <p class="mt-2 text-sm font-semibold text-gray-900">{{ illustrationStyleLabel }}</p>
+                      </div>
+                      <div class="rounded-2xl border border-white/60 bg-white p-4">
+                        <p class="text-xs uppercase tracking-[0.18em] text-gray-400">图表质量</p>
+                        <p class="mt-2 text-sm font-semibold text-gray-900">{{ chartQualityText }}</p>
+                      </div>
+                      <div class="rounded-2xl border border-white/60 bg-white p-4">
+                        <p class="text-xs uppercase tracking-[0.18em] text-gray-400">覆盖率</p>
+                        <p class="mt-2 text-sm font-semibold text-gray-900">{{ chartCoverageText }}</p>
                       </div>
                       <div class="rounded-2xl border border-white/60 bg-white p-4">
                         <p class="text-xs uppercase tracking-[0.18em] text-gray-400">CLIP</p>
@@ -1011,6 +1337,7 @@ watch(
                   <PipelineStatus
                     :intent-info="intentInfo"
                     :illustration-meta="illustrationMeta"
+                    :chart-spec="chartSpec"
                     :stage-cards="stageCards"
                     :recent-logs="recentLogs"
                     :semantic-mode-text="semanticModeText"

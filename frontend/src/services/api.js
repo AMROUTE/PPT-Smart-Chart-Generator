@@ -25,6 +25,14 @@ export function requestProcessBatch(formData) {
 
 export const requestBatchProcess = requestProcessBatch;
 
+export function requestBatchLayout(payload) {
+  return request("/api/batch-layout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function requestDemo(formData) {
   return request("/api/demo-chart", { method: "POST", body: formData });
 }

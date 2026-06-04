@@ -405,6 +405,82 @@ def _compute_chart_region(
     return left, top, width, max(min_height, bottom - top)
 
 
+def _region_from_layout_override(
+    slide_width: int,
+    slide_height: int,
+    override: dict[str, Any],
+    prefix: str,
+) -> tuple[int, int, int, int] | None:
+    x_key = f"{prefix}X"
+    y_key = f"{prefix}Y"
+    scale_key = f"{prefix}Scale"
+    if x_key not in override or y_key not in override or scale_key not in override:
+        return None
+    try:
+        left_ratio = float(override[x_key]) / 100
+        top_ratio = float(override[y_key]) / 100
+        width_ratio = float(override[scale_key]) / 100
+    except (TypeError, ValueError):
+        return None
+    width_ratio = min(max(width_ratio, 0.12), 0.86)
+    width = int(slide_width * width_ratio)
+    height = int(width * 9 / 16)
+    margin_x = int(slide_width * 0.02)
+    margin_y = int(slide_height * 0.03)
+    left = min(max(int(slide_width * left_ratio), margin_x), max(margin_x, slide_width - width - margin_x))
+    top = min(max(int(slide_height * top_ratio), margin_y), max(margin_y, slide_height - height - margin_y))
+    return left, top, width, height
+
+
+def _manual_override_regions(
+    slide_width: int,
+    slide_height: int,
+    layout_override: dict[str, Any] | None,
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+    if not layout_override:
+        return None
+    chart_region = _region_from_layout_override(slide_width, slide_height, layout_override, "chart")
+    illustration_region = _region_from_layout_override(slide_width, slide_height, layout_override, "illustration")
+    if chart_region is None or illustration_region is None:
+        return None
+    return chart_region, illustration_region
+
+
+def _add_asset_result_content(
+    slide: Any,
+    slide_width: int,
+    slide_height: int,
+    chart_region: tuple[int, int, int, int],
+    illustration_region: tuple[int, int, int, int],
+    chart_path: str | Path | None,
+    illustration_path: str | Path | None,
+    title: str,
+    summary: str,
+    intent: dict[str, Any],
+) -> None:
+    chart_type = intent.get("chart_type", "bar")
+    model = intent.get("image_model", "local")
+    style = intent.get("illustration_style", "auto")
+    score = intent.get("clip_score")
+
+    _add_textbox(slide, int(slide_width * 0.08), int(slide_height * 0.08), int(slide_width * 0.76), int(slide_height * 0.07), title, 24, bold=True)
+    _add_caption_box(slide, int(slide_width * 0.08), int(slide_height * 0.15), int(slide_width * 0.76), int(slide_height * 0.05), summary)
+
+    if chart_path and _is_raster_image(chart_path) and Path(chart_path).exists():
+        slide.shapes.add_picture(str(chart_path), Emu(chart_region[0]), Emu(chart_region[1]), width=Emu(chart_region[2]), height=Emu(chart_region[3]))
+    else:
+        _add_caption_box(slide, chart_region[0], chart_region[1], chart_region[2], int(slide_height * 0.12), "Chart preview is not available as a raster image yet.")
+
+    legend_text = f"Chart type: {chart_type} | Source: {intent.get('source', 'local')} | Mode: {intent.get('semantic_mode', 'local')}"
+    _add_caption_box(slide, chart_region[0], chart_region[1] + chart_region[3] + int(slide_height * 0.02), chart_region[2], int(slide_height * 0.08), legend_text)
+
+    if illustration_path and _is_raster_image(illustration_path) and Path(illustration_path).exists():
+        slide.shapes.add_picture(str(illustration_path), Emu(illustration_region[0]), Emu(illustration_region[1]), width=Emu(illustration_region[2]), height=Emu(illustration_region[3]))
+    else:
+        _add_textbox(slide, illustration_region[0], illustration_region[1], illustration_region[2], int(slide_height * 0.08), "Illustration Area", 20, bold=True, color=(52, 82, 126))
+        _add_caption_box(slide, illustration_region[0], illustration_region[1] + int(slide_height * 0.08), illustration_region[2], int(slide_height * 0.18), f"Style: {style} | Model: {model}\nMatch score: {score if score is not None else 'N/A'}\nTheme: {intent.get('visual_theme', 'Generated illustration preview')}")
+
+
 def _add_textbox(slide: Any, left: int, top: int, width: int, height: int, text: str, font_size: int, bold: bool = False, color: tuple[int, int, int] = (32, 52, 82)) -> None:
     box = slide.shapes.add_textbox(Emu(left), Emu(top), Emu(width), Emu(height))
     frame = box.text_frame
@@ -560,7 +636,18 @@ def insert_chart_to_pptx(ppt_path: str | Path, chart_image_path: str | Path, sli
     return InsertResult(str(destination), slide_number, int(chart_left), int(chart_top), int(chart_width), int(chart_height), replaced_table)
 
 
-def insert_generated_assets(ppt_path: str | Path, output_path: str | Path, slide_number: int, chart_path: str | Path | None = None, illustration_path: str | Path | None = None, title: str = "", subtitle: str = "", intent: dict[str, Any] | None = None, shapes: list[dict[str, Any]] | None = None) -> Path:
+def insert_generated_assets(
+    ppt_path: str | Path,
+    output_path: str | Path,
+    slide_number: int,
+    chart_path: str | Path | None = None,
+    illustration_path: str | Path | None = None,
+    title: str = "",
+    subtitle: str = "",
+    intent: dict[str, Any] | None = None,
+    shapes: list[dict[str, Any]] | None = None,
+    layout_override: dict[str, Any] | None = None,
+) -> Path:
     _ensure_dependencies()
     source = Path(ppt_path)
     target = Path(output_path)
@@ -594,11 +681,36 @@ def insert_generated_assets(ppt_path: str | Path, output_path: str | Path, slide
         chart_anchor = _replace_table_region(slide)
         if chart_anchor is None:
             chart_anchor = _default_chart_region(slide_width, slide_height)
-    chart_region, illu_region = _choose_asset_regions(slide_width, slide_height, shapes or [], chart_anchor, anchor["index"] if anchor["index"] else None)
-
+    manual_regions = _manual_override_regions(slide_width, slide_height, layout_override)
+    if manual_regions:
+        chart_region, illu_region = manual_regions
+    else:
+        chart_region, illu_region = _choose_asset_regions(slide_width, slide_height, shapes or [], chart_anchor, anchor["index"] if anchor["index"] else None)
     summary = subtitle or "Auto-generated chart and illustration preview"
     layout = _layout_metadata(chart_region, illu_region, shapes or [], slide_width, slide_height, anchor["index"] if anchor["index"] else None)
-    if layout["layout_warning"]:
+    if manual_regions:
+        layout.update(
+            {
+                "insertion_mode": "manual_override",
+                "manual_override": True,
+                "original_slide_preserved": False,
+                "layout_override": layout_override,
+            }
+        )
+        _replace_table_shape(slide, anchor["index"])
+        _add_asset_result_content(
+            slide,
+            slide_width,
+            slide_height,
+            chart_region,
+            illu_region,
+            chart_path,
+            illustration_path,
+            title or f"Slide {slide_number} chart result",
+            summary,
+            intent,
+        )
+    elif layout["layout_warning"]:
         result_slide = _add_blank_slide(presentation)
         result_chart_region = _result_slide_chart_region(slide_width, slide_height)
         result_illustration_region = _result_slide_illustration_region(slide_width, slide_height)

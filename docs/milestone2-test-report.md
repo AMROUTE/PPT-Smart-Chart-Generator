@@ -14,11 +14,15 @@
 
 | 验证项 | 命令 | 当前结果 | 状态 | 关联 WBS |
 |---|---|---|---|---|
-| 后端单元测试 | `./.venv/bin/python -m unittest tests.test_pipeline` | `Ran 43 tests in 0.692s`，`OK` | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.6`、`M2.7`、`M2.9`、`M2.10` |
+| 后端单元测试 | `./.venv/bin/python -m unittest tests.test_pipeline` | `Ran 51 tests in 1.046s`，`OK` | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.6`、`M2.7`、`M2.8`、`M2.9`、`M2.10` |
 | 语义识别评估 | `./.venv/bin/python evaluator.py` | 60/60，准确率 100.00%，平均 CLIP 7.02 | PASS | `M2.4`、`M2.10` |
 | 50 页批量烟测 | `DATABASE_PATH=/private/tmp/m2-test-report-smoke.db ./.venv/bin/python tools/run_50_slide_smoke.py` | 50/50，增强版 PPT 生成成功，平均 CLIP 6.7 | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.10` |
 | 真实 PPT 版式预复核 | `./.venv/bin/python tools/run_m2_layout_prefill.py` | 10/10 份 PASS，处理页新增资产达到预期，附加页未发现越界或图片间重叠 | PASS | `M2.3`、`M2.10` |
-| 前端生产构建 | `cd frontend && npm run build` | 39 modules transformed，built in 442ms | PASS | `M2.8`、`M2.10` |
+| 前端生产构建 | `cd frontend && npm run build` | 39 modules transformed，built in 610ms | PASS | `M2.8`、`M2.10` |
+| 图表/配图质量升级 demo | `DATABASE_PATH=/private/tmp/m2-quality-upgrade.db ./.venv/bin/python - <<'PY' ...` | 图表质量 9.42/10，配图质量 7.25/10，负向 prompt 和评分组件可回读 | PASS | `M2.5`、`M2.6`、`M2.7`、`M2.10` |
+| 图表/配图质量样例 Gallery | `DATABASE_PATH=/private/tmp/m2-quality-gallery.db ./.venv/bin/python tools/run_m2_quality_gallery.py` | 10/10 PASS，图表和配图样例 PNG、contact sheet、报告已生成；尺寸、KB、颜色数 sanity check 通过 | PASS | `M2.5`、`M2.6`、`M2.7`、`M2.10` |
+| 图表多样性回归 | `DATABASE_PATH=/private/tmp/m2-chart-diversity.db ./.venv/bin/python tools/run_m2_chart_diversity.py` | 5/5 PASS，趋势、构成、对比、相关、分布五类意图分别生成 line、pie、bar、scatter、histogram | PASS | `M2.4`、`M2.5`、`M2.10` |
+| 插图多样性回归 | `DATABASE_PATH=/private/tmp/m2-illustration-diversity.db ./.venv/bin/python tools/run_m2_illustration_diversity.py` | 4/4 PASS，增长、区域、产品、营销四类商务页主题特征不同，构图变体达到 4 类 | PASS | `M2.6`、`M2.7`、`M2.10` |
 | 前端浏览器验收 | Codex 内置浏览器 + `curl http://127.0.0.1:5173/api/jobs?limit=30` | 工作台、日志页、任务详情、设置页均可访问；日志页可展示 `demo-1c60f36568`；桌面和移动端 PNG 截图已落盘 | PASS | `M2.8`、`M2.9`、`M2.10` |
 | 后端健康检查 | `curl http://127.0.0.1:8000/api/health` | `status=ok`，SQLite 可读，功能列表可读 | PASS | `M2.9`、`M2.11` |
 | Docker Compose 解析 | `docker compose config` | 配置可解析 | PASS | `M2.11` |
@@ -37,7 +41,7 @@
 结果：
 
 ```text
-Ran 43 tests in 0.692s
+Ran 51 tests in 1.046s
 OK
 ```
 
@@ -46,9 +50,11 @@ OK
 - Pipeline 主流程阶段。
 - PPT 解析、空页、图片页、多文本块阅读顺序。
 - PPT 写回与版式避让。
-- 8 类图表生成与异常数据 fallback。
+- 批量手动布局写回接口与 `manual_override` 布局元数据。
+- 8 类图表生成、异常数据 fallback、质量分数、质量门禁、轴刻度、值标签、负值零基线和饼图 Other 聚合。
+- 文本演示模式保留年份、区间标签和重复双指标数据，相关性样例使用真实双轴 scatter。
 - WANX / Flux 配图客户端缺 key、WANX 下载、FLUX 直返和轮询解析。
-- 配图评分与低分重生成。
+- 配图评分、评分组件、负向 prompt、行业风格本地预览特征、内容感知插图主题与低分重生成。
 - 数据库冷启动、任务元数据持久化和任务详情接口。
 - 五类图表推荐意图：对比、趋势、构成、分布、相关性。
 
@@ -269,6 +275,7 @@ target backend: failed to solve
 | `docs/milestone2-chart-recommendation-report.md` | `M2.4` 图表推荐质量 |
 | `docs/milestone2-chart-stability-report.md` | `M2.5` 图表生成稳定性 |
 | `docs/milestone2-image-quality-regeneration-report.md` | `M2.6`、`M2.7` 配图质量与重生成 |
+| `docs/milestone2-quality-gallery-report.md` | `M2.5`、`M2.6`、`M2.7` 图表与配图质量样例 Gallery |
 | `docs/milestone2-frontend-quality-fields-report.md` | `M2.8` 前端字段展示 |
 | `docs/milestone2-frontend-browser-validation.md` | `M2.8`、`M2.9`、`M2.10` 前端浏览器验收 |
 | `docs/milestone2-database-log-trace-report.md` | `M2.9` 数据库与日志追踪 |

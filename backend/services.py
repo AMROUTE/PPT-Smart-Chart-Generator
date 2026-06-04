@@ -63,6 +63,7 @@ def build_file_metadata(file_path: Path, slide_number: int) -> dict[str, Any]:
         "size_bytes": file_path.stat().st_size if file_path.exists() else 0,
         "slide_number": slide_number,
         "suffix": file_path.suffix.lower(),
+        "source_pptx_path": str(file_path),
     }
 
 
@@ -360,6 +361,61 @@ def _write_batch_pptx(ppt_path: Path, batch_id: str, successful_results: list[di
     return final_path
 
 
+def apply_batch_layout_overrides(
+    source_pptx_path: str | Path,
+    slides: list[dict[str, Any]],
+    batch_request_id: str = "",
+) -> dict[str, Any]:
+    from backend.insert_to_pptx import insert_generated_assets
+
+    source = Path(source_pptx_path)
+    if not source.exists():
+        raise FileNotFoundError(f"PPT file not found: {source}")
+    if not allowed_file(source.name):
+        raise ValueError("Only .pptx files are supported.")
+    valid_slides = [slide for slide in slides if slide.get("slide_number")]
+    if not valid_slides:
+        raise ValueError("At least one slide layout override is required.")
+
+    output_dir = ensure_output_dir()
+    suffix = batch_request_id or next_request_id("layout")
+    final_path = output_dir / f"{source.stem}_{suffix}_manual_layout.pptx"
+    shutil.copyfile(source, final_path)
+
+    applied_slides: list[dict[str, Any]] = []
+    for slide in valid_slides:
+        slide_number = int(slide["slide_number"])
+        temp_path = final_path.with_name(f"{final_path.stem}_slide_{slide_number}_tmp{final_path.suffix}")
+        intent = dict(slide.get("intent") or {})
+        insert_generated_assets(
+            ppt_path=final_path,
+            output_path=temp_path,
+            slide_number=slide_number,
+            chart_path=slide.get("chart_path") or None,
+            illustration_path=slide.get("illustration_path") or None,
+            title=slide.get("title") or f"第 {slide_number} 页手动布局结果",
+            subtitle=slide.get("subtitle") or intent.get("reason", "手动微调后的批量生成结果。"),
+            intent=intent,
+            shapes=slide.get("shapes") or [],
+            layout_override=slide.get("layout_override") or {},
+        )
+        temp_path.replace(final_path)
+        applied_slides.append(
+            {
+                "slide_number": slide_number,
+                "layout": intent.get("layout", {}),
+            }
+        )
+
+    return {
+        "message": "Manual batch layout applied.",
+        "final_pptx_path": str(final_path),
+        "final_pptx_url": path_to_asset_url(final_path),
+        "applied_count": len(applied_slides),
+        "slides": applied_slides,
+    }
+
+
 def process_ppt_batch(
     file_path: str | Path,
     slide_start: int = 1,
@@ -483,8 +539,25 @@ def process_ppt_batch(
 
 
 def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
+    line_records: list[dict[str, Any]] = []
+    for raw_line in source_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^([^:：]{1,40})[:：]\s*(-?\d+(?:\.\d+)?)\s*$", line)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        if label:
+            line_records.append({"category": label, "value": float(match.group(2))})
+    if line_records:
+        paired_records = _pair_repeated_metric_records(line_records)
+        if paired_records:
+            return paired_records
+        return line_records
+
     matches = re.findall(
-        r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s]{0,24})[:\s]*(\d+(?:\.\d+)?)",
+        r"([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ]{0,24})[:：\s]+(-?\d+(?:\.\d+)?)",
         source_text,
     )
     records = [{"category": label.strip(), "value": float(value)} for label, value in matches]
@@ -492,7 +565,7 @@ def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
         return records
 
     trend_matches = re.findall(
-        r"((?:20\d{2}|Q[1-4]|[A-Za-z]{3}|\d{1,2})\s*[,-]?\s*(\d+(?:\.\d+)?))",
+        r"((?:20\d{2}|Q[1-4]|[A-Za-z]{3}|\d{1,2}))\s*[:：,\-\s]\s*(-?\d+(?:\.\d+)?)",
         source_text,
     )
     if trend_matches:
@@ -504,6 +577,27 @@ def extract_records_from_text(source_text: str) -> list[dict[str, Any]]:
         {"category": "Q3", "value": 188},
         {"category": "Q4", "value": 210},
     ]
+
+
+def _pair_repeated_metric_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labels = [str(record.get("category", "")).strip() for record in records]
+    values = [record.get("value") for record in records]
+    unique_labels = list(dict.fromkeys(labels))
+    if len(unique_labels) != 2 or len(records) < 4 or len(records) % 2 != 0:
+        return []
+    expected = [unique_labels[index % 2] for index in range(len(records))]
+    if labels != expected:
+        return []
+    paired: list[dict[str, Any]] = []
+    for index in range(0, len(records), 2):
+        paired.append(
+            {
+                "point": f"Point {index // 2 + 1}",
+                unique_labels[0]: values[index],
+                unique_labels[1]: values[index + 1],
+            }
+        )
+    return paired
 
 
 def process_demo_text(
@@ -527,6 +621,7 @@ def process_demo_text(
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
     request_id = next_request_id("demo")
+    columns = list(records[0].keys()) if records else ["category", "value"]
     result = run_pipeline(
         {
             "request_id": request_id,
@@ -545,8 +640,8 @@ def process_demo_text(
             "extracted_tables": [
                 {
                     "title": "demo_metrics",
-                    "columns": ["category", "value"],
-                    "rows": [[record["category"], record["value"]] for record in records],
+                    "columns": columns,
+                    "rows": [[record.get(column, "") for column in columns] for record in records],
                 }
             ],
             "logs": [],
@@ -674,6 +769,7 @@ def build_health_payload() -> dict[str, Any]:
             "sqlite-database",
             "multi-chart-theme",
             "batch-processing",
+            "manual-layout-writeback",
         ],
         **database_payload,
     }

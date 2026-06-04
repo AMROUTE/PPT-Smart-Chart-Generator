@@ -26,7 +26,7 @@ from backend.chart_generator import generate_chart
 from backend.database import authenticate_or_create_user, fetch_processing_job, init_db
 from backend.image_clients import _resolve_flux_result_url, generate_flux_image, generate_wanx_image
 from backend.insert_to_pptx import _choose_asset_regions, _overlap_area, insert_chart_to_pptx, insert_generated_assets
-from backend.pipeline import PIPELINE_NODES, _recommend_chart_intent, export_pipeline_mermaid, run_pipeline
+from backend.pipeline import PIPELINE_NODES, _infer_illustration_context, _recommend_chart_intent, _select_illustration_composition_variant, export_pipeline_mermaid, run_pipeline
 from backend.ppt_parser import extract_slide_content, table_to_dataframe
 from backend.schemas import PipelineInput
 from backend.services import (
@@ -40,6 +40,7 @@ from backend.services import (
     normalize_image_model,
     normalize_illustration_style,
     parse_presentation_slides,
+    apply_batch_layout_overrides,
     path_to_asset_url,
     process_demo_text,
     process_ppt_batch,
@@ -218,6 +219,38 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0]["category"], "Revenue")
 
+    def test_extract_records_from_text_preserves_numeric_labels(self):
+        records = extract_records_from_text("2020: 100\n2021: 150\n2022: 220\n2023: 300")
+        self.assertEqual(
+            records,
+            [
+                {"category": "2020", "value": 100.0},
+                {"category": "2021", "value": 150.0},
+                {"category": "2022", "value": 220.0},
+                {"category": "2023", "value": 300.0},
+            ],
+        )
+
+    def test_extract_records_from_text_preserves_range_labels(self):
+        records = extract_records_from_text("0-10分: 2\n10-20分: 4\n20-30分: 9")
+        self.assertEqual([record["category"] for record in records], ["0-10分", "10-20分", "20-30分"])
+        self.assertEqual([record["value"] for record in records], [2.0, 4.0, 9.0])
+
+    def test_extract_records_from_text_pairs_repeated_metrics_for_correlation(self):
+        records = extract_records_from_text("广告投入: 10\n销售额: 80\n广告投入: 20\n销售额: 120\n广告投入: 30\n销售额: 170")
+        self.assertEqual(records[0], {"point": "Point 1", "广告投入": 10.0, "销售额": 80.0})
+        self.assertEqual(records[2], {"point": "Point 3", "广告投入": 30.0, "销售额": 170.0})
+
+    def test_process_demo_text_uses_real_two_axis_scatter_data(self):
+        payload = process_demo_text("广告投入: 10\n销售额: 80\n广告投入: 20\n销售额: 120\n广告投入: 30\n销售额: 170\n广告投入越高销售额越高", image_model="local")
+        spec = payload["pipeline"]["chart_spec"]
+        self.assertEqual(payload["pipeline"]["intent"]["intent_category"], "correlation")
+        self.assertEqual(spec["chart_type"], "scatter")
+        self.assertEqual(spec["y_columns"], ["广告投入", "销售额"])
+        self.assertFalse(any("synthetic" in warning.lower() for warning in spec["warnings"]))
+        self.assertIn("scatter_real_xy", spec["render_notes"])
+        self.assertIn("scatter_trendline", spec["render_notes"])
+
     def test_process_demo_text_returns_preview_assets(self):
         payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", chart_theme="minimal", illustration_style="business", image_model="wanx")
         self.assertEqual(payload["pipeline"]["status"], "completed")
@@ -227,6 +260,9 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("recommendation_confidence", payload["pipeline"]["intent"])
         self.assertIn("recommendation_signals", payload["pipeline"]["intent"])
         self.assertIn("clip_score", payload["pipeline"]["illustration_meta"])
+        self.assertIn("quality_score", payload["pipeline"]["chart_spec"])
+        self.assertGreater(payload["pipeline"]["chart_spec"]["quality_score"], 0)
+        self.assertIn("quality_checks", payload["pipeline"]["chart_spec"])
         self.assertEqual(payload["pipeline"]["chart_spec"]["theme"], "minimal")
         self.assertIn(payload["pipeline"]["illustration_meta"]["generation_source"], {"local", "wanx", "flux"})
 
@@ -241,6 +277,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(meta["resolved_image_source"], "local")
         self.assertTrue(meta["fallback_to_local"])
         self.assertTrue(meta["generation_warning"])
+        self.assertIn("tech_device_cloud", meta["local_render_features"])
         self.assertTrue(Path(payload["pipeline"]["illustration_image"]).exists())
 
     def test_process_demo_text_initializes_empty_database(self):
@@ -262,8 +299,64 @@ class ServiceTests(unittest.TestCase):
         self.assertLess(meta["initial_clip_score"], meta["score_threshold"])
         self.assertGreaterEqual(meta["clip_score"], meta["score_threshold"])
         self.assertFalse(meta["regenerate_hint"])
+        self.assertIn("quality_components", meta)
+        self.assertTrue(meta["quality_components"]["negative_prompt"])
+        self.assertIn("infographic", meta["negative_prompt_terms"])
+        self.assertTrue(any(feature.startswith("business_") for feature in meta["local_render_features"]))
+        self.assertIn("negative prompt", " ".join(meta["prompt_quality_notes"]).lower())
         self.assertIn("illustration_prompt_retry", payload["pipeline"])
-        self.assertIn("Avoid charts, axes, dashboards", payload["pipeline"]["illustration_prompt_retry"])
+        self.assertIn("Negative prompt: no charts", payload["pipeline"]["illustration_prompt_retry"])
+
+    def test_process_demo_text_records_local_illustration_style_features(self):
+        payload = process_demo_text("Healthcare visits: 42\nFollow-up calls: 18", illustration_style="medical", image_model="local")
+        meta = payload["pipeline"]["illustration_meta"]
+        self.assertEqual(meta["generation_source"], "local")
+        self.assertIn("local_scene_preview", meta["local_render_features"])
+        self.assertIn("human_subjects", meta["local_render_features"])
+        self.assertIn("medical_care_symbol", meta["local_render_features"])
+        self.assertIn(meta["composition_variant"], {"duo_panel", "full_scene", "spotlight", "diagonal_workshop"})
+        self.assertTrue(any(feature.startswith("layout_variant_") for feature in meta["local_render_features"]))
+        self.assertTrue(Path(payload["pipeline"]["illustration_image"]).exists())
+
+    def test_illustration_composition_variant_is_stable_and_content_sensitive(self):
+        first = _select_illustration_composition_variant("medical visits", "medical", "local", "slide-1")
+        second = _select_illustration_composition_variant("medical visits", "medical", "local", "slide-1")
+        variants = {
+            _select_illustration_composition_variant(f"theme-{index}", "business", "local", f"slide-{index}")
+            for index in range(8)
+        }
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(len(variants), 2)
+
+    def test_illustration_context_avoids_generic_office_for_business_topics(self):
+        samples = [
+            (
+                "华东: 35\n华南: 25\n华北: 20\n西南: 20\n请展示各区域市场份额占比",
+                "regional",
+                "business_regional_network",
+            ),
+            (
+                "产品A: 120\n产品B: 95\n产品C: 150\n产品D: 110\n比较四个产品销量差异",
+                "product",
+                "business_product_showroom",
+            ),
+            (
+                "广告投入: 10\n销售额: 80\n广告投入: 20\n销售额: 120\n广告投入与销售额呈正相关",
+                "campaign",
+                "business_marketing_studio",
+            ),
+        ]
+        for text, theme_marker, expected_feature in samples:
+            records = extract_records_from_text(text)
+            columns = list(records[0].keys())
+            rows = [[record[column] for column in columns] for record in records]
+            recommendation = _recommend_chart_intent(text, columns, rows)
+            context = _infer_illustration_context(text, columns, rows, recommendation, "auto")
+            self.assertIn(theme_marker, context["visual_theme"].lower())
+            self.assertNotIn("office collaboration", context["visual_theme"].lower())
+            payload = process_demo_text(text, illustration_style="auto", image_model="local")
+            meta = payload["pipeline"]["illustration_meta"]
+            self.assertIn(expected_feature, meta["local_render_features"])
 
     def test_process_demo_text_persists_pipeline_metadata_for_logs(self):
         payload = process_demo_text("Alpha\nBeta", illustration_style="auto", image_model="local")
@@ -662,6 +755,92 @@ class PptModuleTests(unittest.TestCase):
             illustration_path.unlink(missing_ok=True)
             output_ppt.unlink(missing_ok=True)
 
+    def test_insert_generated_assets_accepts_manual_layout_override(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        presentation = Presentation()
+        presentation.slides.add_slide(presentation.slide_layouts[6])
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            presentation.save(tmp.name)
+            ppt_path = Path(tmp.name)
+        chart_path = Path(tempfile.gettempdir()) / "manual_layout_chart.png"
+        illustration_path = Path(tempfile.gettempdir()) / "manual_layout_illustration.png"
+        output_ppt = Path(tempfile.gettempdir()) / "manual_layout_output.pptx"
+        try:
+            Image.new("RGB", (800, 450), "#ffffff").save(chart_path)
+            Image.new("RGB", (800, 450), "#ddeeff").save(illustration_path)
+            intent = {"chart_type": "bar", "semantic_mode": "local"}
+            insert_generated_assets(
+                ppt_path=ppt_path,
+                output_path=output_ppt,
+                slide_number=1,
+                chart_path=chart_path,
+                illustration_path=illustration_path,
+                intent=intent,
+                layout_override={
+                    "chartX": 12,
+                    "chartY": 18,
+                    "chartScale": 40,
+                    "illustrationX": 56,
+                    "illustrationY": 24,
+                    "illustrationScale": 30,
+                },
+            )
+            enhanced = Presentation(str(output_ppt))
+            self.assertEqual(len(enhanced.slides), 1)
+            self.assertEqual(intent["layout"]["insertion_mode"], "manual_override")
+            self.assertTrue(intent["layout"]["manual_override"])
+            self.assertEqual(intent["layout"]["chart_region"]["left"], int(enhanced.slide_width * 0.12))
+            self.assertEqual(intent["layout"]["illustration_region"]["left"], int(enhanced.slide_width * 0.56))
+        finally:
+            ppt_path.unlink(missing_ok=True)
+            chart_path.unlink(missing_ok=True)
+            illustration_path.unlink(missing_ok=True)
+            output_ppt.unlink(missing_ok=True)
+
+    def test_apply_batch_layout_overrides_writes_manual_layout_pptx(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        presentation = Presentation()
+        presentation.slides.add_slide(presentation.slide_layouts[6])
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            presentation.save(tmp.name)
+            ppt_path = Path(tmp.name)
+        chart_path = Path(tempfile.gettempdir()) / "batch_manual_chart.png"
+        illustration_path = Path(tempfile.gettempdir()) / "batch_manual_illustration.png"
+        try:
+            Image.new("RGB", (800, 450), "#ffffff").save(chart_path)
+            Image.new("RGB", (800, 450), "#ddeeff").save(illustration_path)
+            payload = apply_batch_layout_overrides(
+                ppt_path,
+                [
+                    {
+                        "slide_number": 1,
+                        "chart_path": str(chart_path),
+                        "illustration_path": str(illustration_path),
+                        "intent": {"chart_type": "line", "semantic_mode": "local"},
+                        "layout_override": {
+                            "chartX": 8,
+                            "chartY": 10,
+                            "chartScale": 36,
+                            "illustrationX": 52,
+                            "illustrationY": 20,
+                            "illustrationScale": 34,
+                        },
+                    }
+                ],
+                batch_request_id="test-layout",
+            )
+            self.assertEqual(payload["applied_count"], 1)
+            self.assertTrue(Path(payload["final_pptx_path"]).exists())
+            self.assertTrue(payload["final_pptx_url"].startswith("/assets/outputs/"))
+            self.assertEqual(payload["slides"][0]["layout"]["insertion_mode"], "manual_override")
+            Path(payload["final_pptx_path"]).unlink(missing_ok=True)
+        finally:
+            ppt_path.unlink(missing_ok=True)
+            chart_path.unlink(missing_ok=True)
+            illustration_path.unlink(missing_ok=True)
+
 
     def test_insert_chart_to_pptx_reuses_adjacent_title_and_legend_regions(self):
         presentation = Presentation()
@@ -740,6 +919,8 @@ class ChartThemeTests(unittest.TestCase):
         try:
             chart = generate_chart([], "bar", output_path=output_chart, title="Empty Data")
             self.assertTrue(chart.fallback)
+            self.assertEqual(chart.quality_status, "fallback")
+            self.assertTrue(chart.review_required)
             self.assertIn("empty", " ".join(chart.warnings or []).lower())
             self.assertTrue(output_chart.exists())
             self.assertGreater(output_chart.stat().st_size, 0)
@@ -762,6 +943,70 @@ class ChartThemeTests(unittest.TestCase):
                 title="Missing Values",
             )
             self.assertFalse(chart.fallback)
+            self.assertGreater(chart.quality_score, 0)
+            self.assertLess(chart.quality_checks["numeric_coverage"], 1)
+            self.assertEqual(chart.quality_status, "review")
+            self.assertTrue(chart.review_required)
+            self.assertIn("value_labels", chart.render_notes)
+            self.assertTrue(output_chart.exists())
+        finally:
+            output_chart.unlink(missing_ok=True)
+
+    def test_generate_chart_reports_quality_metadata_and_sampling(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        output_chart = Path(tempfile.gettempdir()) / "sampled_quality_chart.png"
+        records = [{"label": f"Segment {index}", "value": index * 10, "other": index * 3} for index in range(1, 15)]
+        try:
+            chart = generate_chart(records, "bar", output_path=output_chart, title="Quality Metadata")
+            spec = chart.to_dict()
+            self.assertFalse(chart.fallback)
+            self.assertEqual(spec["data_points"], 10)
+            self.assertEqual(spec["series_count"], 2)
+            self.assertGreaterEqual(spec["quality_score"], 7)
+            self.assertEqual(spec["quality_status"], "attention")
+            self.assertFalse(spec["review_required"])
+            self.assertEqual(spec["quality_checks"]["readability"], "sampled")
+            self.assertTrue(any("sampled 10 of 14" in warning for warning in spec["warnings"]))
+            self.assertIn("axis_ticks", spec["render_notes"])
+            self.assertTrue(output_chart.exists())
+        finally:
+            output_chart.unlink(missing_ok=True)
+
+    def test_generate_chart_marks_zero_baseline_for_negative_bars(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        output_chart = Path(tempfile.gettempdir()) / "negative_bar_quality.png"
+        try:
+            chart = generate_chart(
+                [
+                    {"label": "North", "value": 42},
+                    {"label": "South", "value": -18},
+                    {"label": "West", "value": 24},
+                ],
+                "bar",
+                output_path=output_chart,
+                title="Positive and Negative Values",
+            )
+            self.assertFalse(chart.fallback)
+            self.assertIn("zero_baseline", chart.render_notes)
+            self.assertEqual(chart.quality_checks["value_range"], ["-18", "42"])
+            self.assertTrue(output_chart.exists())
+        finally:
+            output_chart.unlink(missing_ok=True)
+
+    def test_generate_chart_groups_extra_pie_slices_into_other(self):
+        if Image is None:
+            self.skipTest("Pillow is not installed")
+        output_chart = Path(tempfile.gettempdir()) / "pie_other_grouped.png"
+        records = [{"label": f"Category {index}", "value": index} for index in range(1, 9)]
+        try:
+            chart = generate_chart(records, "pie", output_path=output_chart, title="Grouped Pie")
+            self.assertFalse(chart.fallback)
+            self.assertEqual(chart.data_points, 6)
+            self.assertEqual(chart.quality_status, "attention")
+            self.assertIn("pie_other_grouped", chart.render_notes)
+            self.assertTrue(any("grouped 3 small slices into Other" in warning for warning in chart.warnings or []))
             self.assertTrue(output_chart.exists())
         finally:
             output_chart.unlink(missing_ok=True)
@@ -777,6 +1022,7 @@ class ChartThemeTests(unittest.TestCase):
             heatmap = generate_chart(records, "heatmap", output_path=heatmap_path)
             self.assertFalse(scatter.fallback)
             self.assertIn("_point_index", scatter.y_columns)
+            self.assertIn("scatter_synthetic_index", scatter.render_notes)
             self.assertTrue(any("synthetic" in warning.lower() for warning in scatter.warnings or []))
             self.assertFalse(heatmap.fallback)
             self.assertEqual(len(heatmap.y_columns), 2)
@@ -853,6 +1099,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/pipeline", route_paths)
         self.assertIn("/api/process", route_paths)
         self.assertIn("/api/process-batch", route_paths)
+        self.assertIn("/api/batch-layout", route_paths)
         self.assertIn("/api/demo-chart", route_paths)
         self.assertIn("/api/slide-preview", route_paths)
         self.assertIn("/api/parse-slides", route_paths)
@@ -865,6 +1112,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("wanx_enabled", payload)
         self.assertIn("flux_enabled", payload)
         self.assertIn("batch-processing", payload["features"])
+        self.assertIn("manual-layout-writeback", payload["features"])
         self.assertEqual(payload["database_engine"], "sqlite")
 
     def test_health_endpoint_returns_structured_payload(self):
@@ -873,6 +1121,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("batch-processing", payload["features"])
+        self.assertIn("manual-layout-writeback", payload["features"])
         self.assertIsInstance(payload["database_enabled"], bool)
 
     def test_authenticate_or_create_user_persists_user(self):

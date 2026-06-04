@@ -4,6 +4,7 @@ import logging
 import re
 import shutil
 import tempfile
+import hashlib
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -24,8 +25,36 @@ PIPELINE_NODES = ["parse_ppt", "semantic_analysis", "generate_chart", "generate_
 
 STEP_PROGRESS = {"parse_ppt": 20, "semantic_analysis": 40, "generate_chart": 65, "generate_illustration": 85, "save_pptx": 100}
 
-ILLUSTRATION_FORBIDDEN_TERMS = {"chart", "charts", "graph", "graphs", "dashboard", "bar", "line", "pie", "scatter", "heatmap"}
+ILLUSTRATION_FORBIDDEN_TERMS = {
+    "chart",
+    "charts",
+    "graph",
+    "graphs",
+    "dashboard",
+    "bar",
+    "line",
+    "pie",
+    "scatter",
+    "heatmap",
+    "axis",
+    "axes",
+    "plot",
+    "plots",
+    "table",
+    "tables",
+    "infographic",
+}
 ILLUSTRATION_SCORE_THRESHOLD = 6.5
+ILLUSTRATION_NEGATIVE_PROMPT = (
+    "Negative prompt: no charts, axes, dashboards, data panels, tables, bar shapes, line plots, pie slices, "
+    "screens full of metrics, tiny unreadable text, watermarks, logos, UI screenshots, distorted hands, or cluttered layout."
+)
+ILLUSTRATION_COMPOSITION_VARIANTS = {
+    "duo_panel": "foreground people on one side with a separate concept object zone and wide text-safe space",
+    "full_scene": "immersive room-scale scene with people embedded in the environment and the concept object as part of the setting",
+    "spotlight": "large central metaphor object with small human figures around it and generous quiet margins",
+    "diagonal_workshop": "diagonal workshop flow from people to object, asymmetric spacing, open upper area for slide text",
+}
 ILLUSTRATION_STYLE_PROFILES = {
     "auto": {
         "scene": "clear business context with people, place, and activity",
@@ -235,47 +264,197 @@ def _sanitize_keywords(keywords: list[str]) -> list[str]:
     return sanitized
 
 
+def _topic_terms_from_table(columns: list[Any], rows: list[list[Any]]) -> list[str]:
+    terms: list[str] = []
+    for value in list(columns)[:3]:
+        text = _sanitize_illustration_text(str(value))
+        if text and text not in terms:
+            terms.append(text)
+    for row in rows[:6]:
+        if not row:
+            continue
+        text = _sanitize_illustration_text(str(row[0]))
+        if text and not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text) and text not in terms:
+            terms.append(text)
+    return terms[:6]
+
+
+def _infer_illustration_context(
+    text_content: str,
+    columns: list[Any],
+    rows: list[list[Any]],
+    recommendation: dict[str, Any],
+    requested_style: str,
+) -> dict[str, Any]:
+    text = (text_content or "").lower()
+    topic_terms = _topic_terms_from_table(columns, rows)
+    intent = recommendation.get("intent_category", "comparison")
+    resolved_style = "business"
+    subject = "business outcome"
+    visual_theme = "business outcome story with concrete workplace objects"
+    keywords = ["business context", "clear focal objects", "human activity"]
+
+    if any(marker in text for marker in ["算法", "模型", "识别", "ai", "api", "cloud", "software", "系统", "技术"]):
+        resolved_style = "tech"
+        subject = "AI model evaluation"
+        visual_theme = "AI lab scene with model workbench, device prototypes, and engineers reviewing results"
+        keywords = ["AI lab", "model cards", "device prototypes", "engineering review"]
+    elif any(marker in text for marker in ["科室", "内科", "外科", "儿科", "急诊", "接诊", "医疗", "health", "clinic"]):
+        resolved_style = "medical"
+        subject = "clinical service workload"
+        visual_theme = "hospital clinic scene with department signs, clinician support, and patient flow"
+        keywords = ["clinic departments", "care team", "patient flow", "medical reception"]
+    elif any(marker in text for marker in ["年级", "成绩", "学生", "教学", "课程", "大一", "大二", "大三", "大四", "education", "grade"]):
+        resolved_style = "education"
+        subject = "student learning progress"
+        visual_theme = "campus learning scene with students, tutor, books, and progress milestones"
+        keywords = ["campus learning", "student progress", "books", "milestones"]
+    elif any(marker in text for marker in ["广告", "投放", "转化", "渠道", "线上", "线下", "marketing", "campaign"]):
+        resolved_style = "business"
+        subject = "marketing campaign performance"
+        visual_theme = "marketing campaign studio with creative boards, customer journey notes, and team coordination"
+        keywords = ["campaign studio", "creative boards", "customer journey", "brand planning"]
+    elif any(marker in text for marker in ["区域", "华东", "华南", "华北", "西南", "市场份额", "份额", "market share", "region"]):
+        resolved_style = "business"
+        subject = "regional market presence"
+        visual_theme = "regional business expansion scene with storefront network, local teams, and territory planning wall"
+        keywords = ["regional storefronts", "territory planning", "local teams", "market presence"]
+    elif any(marker in text for marker in ["产品", "销量", "product", "portfolio"]):
+        resolved_style = "business"
+        subject = "product portfolio comparison"
+        visual_theme = "product showroom scene with four product display stands and sales planning discussion"
+        keywords = ["product showroom", "display stands", "sales planning", "portfolio review"]
+    elif intent == "trend" or any(marker in text for marker in ["增长", "下降", "持续", "趋势", "营收", "revenue", "growth"]):
+        resolved_style = "business"
+        subject = "business growth journey"
+        visual_theme = "business growth journey scene with staircase path, milestone markers, and leadership planning"
+        keywords = ["growth path", "milestone markers", "leadership planning", "future outlook"]
+    elif intent == "composition":
+        visual_theme = "business composition story with separate service areas and balanced resource allocation"
+        keywords = ["service areas", "resource allocation", "balanced portfolio", "team review"]
+    elif intent == "correlation":
+        visual_theme = "cause and effect business workshop with connected actions, experiment table, and outcome review"
+        keywords = ["cause and effect", "experiment table", "outcome review", "connected actions"]
+
+    if requested_style != "auto":
+        resolved_style = requested_style
+
+    contextual_terms = [term for term in topic_terms if term not in keywords]
+    keywords = _sanitize_keywords(keywords + contextual_terms)[:6]
+    return {
+        "visual_theme": visual_theme,
+        "keywords": keywords,
+        "resolved_illustration_style": resolved_style,
+        "illustration_subject": subject,
+        "topic_terms": topic_terms,
+    }
+
+
 def _illustration_style_profile(style_hint: str) -> dict[str, Any]:
     return ILLUSTRATION_STYLE_PROFILES.get(style_hint, ILLUSTRATION_STYLE_PROFILES["auto"])
 
 
-def _build_illustration_prompt(visual_theme: str, style_hint: str, image_model: str, summary: str, keywords: list[str], audience: str) -> str:
+def _select_illustration_composition_variant(*parts: Any) -> str:
+    seed = "|".join(str(part or "") for part in parts)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    variants = list(ILLUSTRATION_COMPOSITION_VARIANTS)
+    numeric_part = next((int(str(part).strip()) for part in parts if str(part or "").strip().isdigit()), None)
+    if numeric_part is not None:
+        offset = int(digest[:8], 16) % len(variants)
+        return variants[(numeric_part - 1 + offset) % len(variants)]
+    return variants[int(digest[:8], 16) % len(variants)]
+
+
+def _build_illustration_prompt(
+    visual_theme: str,
+    style_hint: str,
+    image_model: str,
+    summary: str,
+    keywords: list[str],
+    audience: str,
+    composition_variant: str = "",
+    subject: str = "",
+) -> str:
     sanitized_theme = _sanitize_illustration_text(visual_theme) or "business scenario illustration"
     sanitized_summary = _sanitize_illustration_text(summary)
     sanitized_keywords = _sanitize_keywords(keywords)
     style_text = "auto" if style_hint == "auto" else style_hint
     profile = _illustration_style_profile(style_hint)
+    variant = composition_variant or _select_illustration_composition_variant(sanitized_theme, style_hint, sanitized_summary, ",".join(sanitized_keywords))
+    variant_text = ILLUSTRATION_COMPOSITION_VARIANTS.get(variant, ILLUSTRATION_COMPOSITION_VARIANTS["duo_panel"])
     parts = [
         f"Theme: {sanitized_theme}",
         f"Style: {style_text}",
         f"Audience: {audience or 'business'}",
         f"Scene: {profile['scene']}",
         f"Mood: {profile['mood']}",
+        f"Composition Variant: {variant_text}",
     ]
+    if subject:
+        parts.append(f"Concrete Subject: {_sanitize_illustration_text(subject)}")
     if sanitized_summary:
         parts.append(f"Direction: {sanitized_summary}")
     if sanitized_keywords:
         parts.append(f"Keywords: {', '.join(sanitized_keywords[:4])}")
+    parts.append("Composition: 16:9 presentation illustration, one clear focal scene, clean negative space for slide text, varied camera angle, no split-screen panels.")
+    parts.append("Quality: polished high-resolution editorial illustration, coherent lighting, consistent perspective, presentation-safe details.")
     parts.append("Create a scene illustration only: people, objects, environment, and concept metaphor.")
-    parts.append("Avoid charts, axes, dashboards, data panels, tables, bar shapes, line plots, pie slices, or explicit statistical graphics.")
+    parts.append("Make the objects and setting specific to the theme and keywords; avoid generic boardroom meetings unless explicitly requested.")
+    parts.append(ILLUSTRATION_NEGATIVE_PROMPT)
     parts.append(f"Model: {image_model}")
     return " | ".join(parts)
 
 
-def _estimate_clip_score(text_content: str, visual_theme: str, keywords: list[str], style: str, image_model: str) -> float:
-    base = 6.2
+def _estimate_illustration_quality(text_content: str, visual_theme: str, keywords: list[str], style: str, image_model: str, prompt: str) -> dict[str, Any]:
+    base = 5.25
     text_lower = text_content.lower()
+    prompt_lower = prompt.lower()
+    keyword_overlap = any(keyword.lower() in text_lower for keyword in keywords)
+    semantic_marker = any(marker in text_lower for marker in ["growth", "trend", "revenue", "share", "education", "medical", "tech", "business", "增长", "趋势", "营收", "占比", "教育", "医疗", "科技"])
+    style_specific = style != "auto"
+    external_model = image_model in {"flux", "wanx"}
+    has_visual_theme = bool(visual_theme)
+    has_scene = "scene:" in prompt_lower and "one clear focal scene" in prompt_lower
+    has_composition_variant = "composition variant:" in prompt_lower
+    has_negative_prompt = "negative prompt:" in prompt_lower and "no charts" in prompt_lower
+    has_quality_spec = "high-resolution" in prompt_lower and "presentation-safe" in prompt_lower
+
+    score = base
     if any(keyword.lower() in text_lower for keyword in keywords):
-        base += 0.6
-    if any(marker in text_lower for marker in ["growth", "trend", "revenue", "share", "education", "medical", "tech", "business"]):
-        base += 0.4
-    if style != "auto":
-        base += 0.3
-    if image_model in {"flux", "wanx"}:
-        base += 0.2
+        score += 0.55
+    if semantic_marker:
+        score += 0.45
+    if style_specific:
+        score += 0.55
+    if external_model:
+        score += 0.2
     if visual_theme:
-        base += 0.2
-    return round(min(base, 9.4), 2)
+        score += 0.25
+    if has_scene:
+        score += 0.25
+    if has_composition_variant:
+        score += 0.15
+    if has_negative_prompt:
+        score += 0.25
+    if has_quality_spec:
+        score += 0.25
+
+    return {
+        "score": round(min(score, 9.4), 2),
+        "keyword_overlap": keyword_overlap,
+        "semantic_marker": semantic_marker,
+        "style_specific": style_specific,
+        "external_model": external_model,
+        "visual_theme": has_visual_theme,
+        "scene_spec": has_scene,
+        "composition_variant": has_composition_variant,
+        "negative_prompt": has_negative_prompt,
+        "quality_spec": has_quality_spec,
+    }
+
+
+def _estimate_clip_score(text_content: str, visual_theme: str, keywords: list[str], style: str, image_model: str, prompt: str = "") -> float:
+    return float(_estimate_illustration_quality(text_content, visual_theme, keywords, style, image_model, prompt)["score"])
 
 
 @lru_cache(maxsize=1)
@@ -344,6 +523,13 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
     rows = table.get("rows", [])
     table_summary = f"columns={columns}; sample_rows={rows[:4]}"
     recommendation = _recommend_chart_intent(state.get("text_content", ""), columns, rows)
+    illustration_context = _infer_illustration_context(
+        state.get("text_content", ""),
+        columns,
+        rows,
+        recommendation,
+        illustration_style,
+    )
 
     heuristic_result = {
         "task": "chart_generation",
@@ -357,9 +543,12 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
         "recommendation_signals": recommendation["signals"],
         "chart_alternatives": recommendation["alternatives"],
         "chart_recommendation": recommendation,
-        "visual_theme": "business office collaboration" if illustration_style == "auto" else f"{illustration_style} visual scene",
+        "visual_theme": illustration_context["visual_theme"],
         "palette": ["deep-blue", "sky-blue"],
-        "keywords": ["office space", "team collaboration", "business atmosphere"],
+        "keywords": illustration_context["keywords"],
+        "illustration_subject": illustration_context["illustration_subject"],
+        "resolved_illustration_style": illustration_context["resolved_illustration_style"],
+        "illustration_topic_terms": illustration_context["topic_terms"],
         "source": "heuristic",
         "semantic_mode": "local",
         "image_model": image_model,
@@ -382,9 +571,12 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
                 "recommendation_signals": recommendation["signals"],
                 "chart_alternatives": recommendation["alternatives"],
                 "chart_recommendation": recommendation,
-                "visual_theme": llm_result["visual_theme"] if illustration_style == "auto" else f"{illustration_style} visual scene",
+                "visual_theme": llm_result["visual_theme"] if illustration_style == "auto" else illustration_context["visual_theme"],
                 "palette": llm_result["palette"],
-                "keywords": _sanitize_keywords(llm_result["keywords"]),
+                "keywords": _sanitize_keywords(llm_result["keywords"] or illustration_context["keywords"]),
+                "illustration_subject": illustration_context["illustration_subject"],
+                "resolved_illustration_style": illustration_context["resolved_illustration_style"],
+                "illustration_topic_terms": illustration_context["topic_terms"],
                 "source": "qwen",
                 "model": get_settings().qwen_model,
                 "semantic_mode": "qwen",
@@ -424,7 +616,21 @@ def generate_chart_node(state: dict[str, Any]) -> dict[str, Any]:
         return append_log(state, "Chart generation completed from extracted table.")
     except Exception as exc:
         fallback_path = _write_chart_fallback_png(output_path, state["current_slide"], tables, chart_type)
-        state["chart_spec"] = {"chart_type": chart_type, "output_path": str(fallback_path), "title": f"Slide {state['current_slide']} chart recommendation", "theme": str(state.get("chart_theme", "tech")), "data_points": len(tables[0].get("rows", [])) if tables else 0, "fallback": True}
+        state["chart_spec"] = {
+            "chart_type": chart_type,
+            "output_path": str(fallback_path),
+            "title": f"Slide {state['current_slide']} chart recommendation",
+            "theme": str(state.get("chart_theme", "tech")),
+            "data_points": len(tables[0].get("rows", [])) if tables else 0,
+            "fallback": True,
+            "quality_score": 1.0,
+            "quality_status": "fallback",
+            "review_required": True,
+            "review_reason": f"Chart generator fallback enabled: {exc}",
+            "quality_checks": {"quality_score": 1.0, "readability": "fallback"},
+            "render_notes": ["pipeline_fallback"],
+            "warnings": [str(exc)],
+        }
         state["chart_image"] = str(fallback_path)
         append_log(state, f"Chart generator fallback enabled: {exc}", "warning")
         return append_log(state, "Chart generation fallback completed.")
@@ -459,7 +665,15 @@ def _write_chart_fallback_png(output_path: Path, slide_number: int, tables: list
     return png_path
 
 
-def _write_illustration_png(output_path: Path, visual_theme: str, style_hint: str, image_model: str, refined: bool = False) -> None:
+def _write_illustration_png(
+    output_path: Path,
+    visual_theme: str,
+    style_hint: str,
+    image_model: str,
+    refined: bool = False,
+    variant_key: str = "",
+    composition_variant: str = "",
+) -> list[str]:
     from PIL import Image, ImageDraw, ImageFont
     output_path.parent.mkdir(parents=True, exist_ok=True)
     profile = _illustration_style_profile(style_hint)
@@ -468,24 +682,140 @@ def _write_illustration_png(output_path: Path, visual_theme: str, style_hint: st
     draw = ImageDraw.Draw(image)
     title_font = ImageFont.load_default()
     body_font = ImageFont.load_default()
+    layout_key = composition_variant or _select_illustration_composition_variant(visual_theme, style_hint, image_model, variant_key)
+    features = ["local_scene_preview", "16:9_canvas", "clean_negative_space", "no_chart_shapes", f"layout_variant_{layout_key}"]
+
+    def draw_people_cluster(x: int, y: int, scale: float, reverse: bool = False) -> None:
+        head = int(58 * scale)
+        body_w = int(96 * scale)
+        body_h = int(150 * scale)
+        gap = int(108 * scale)
+        offsets = [0, gap, gap * 2]
+        if reverse:
+            offsets = list(reversed(offsets))
+        for index, offset in enumerate(offsets):
+            cx = x + offset
+            cy = y + int((index % 2) * 16 * scale)
+            draw.ellipse((cx, cy, cx + head, cy + head), fill=accent)
+            draw.rounded_rectangle((cx - int(18 * scale), cy + head + int(12 * scale), cx + body_w, cy + head + body_h), radius=int(30 * scale), fill=background)
+        features.append("human_subjects")
+
+    def draw_style_motif(box: tuple[int, int, int, int]) -> None:
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        motif = "business" if style_hint == "auto" else style_hint
+        theme_lower = (visual_theme or "").lower()
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=max(18, width // 10), fill=background)
+        if motif == "business":
+            if "growth" in theme_lower or "milestone" in theme_lower or "增长" in theme_lower:
+                for step in range(4):
+                    sx = x1 + int(width * (0.14 + step * 0.18))
+                    sy = y2 - int(height * (0.18 + step * 0.12))
+                    draw.rounded_rectangle((sx, sy, sx + int(width * 0.14), y2 - int(height * 0.08)), radius=10, fill=accent if step == 3 else soft)
+                draw.line((x1 + int(width * 0.14), y2 - int(height * 0.22), x2 - int(width * 0.14), y1 + int(height * 0.22)), fill=accent, width=5)
+                features.append("business_growth_milestones")
+            elif "regional" in theme_lower or "territory" in theme_lower or "区域" in theme_lower:
+                points = [
+                    (x1 + int(width * 0.22), y1 + int(height * 0.32)),
+                    (x1 + int(width * 0.52), y1 + int(height * 0.24)),
+                    (x1 + int(width * 0.72), y1 + int(height * 0.48)),
+                    (x1 + int(width * 0.36), y1 + int(height * 0.66)),
+                ]
+                for start, end in zip(points, points[1:] + points[:1]):
+                    draw.line((*start, *end), fill=accent, width=4)
+                for px, py in points:
+                    draw.ellipse((px - 18, py - 18, px + 18, py + 18), fill=soft, outline=accent, width=4)
+                features.append("business_regional_network")
+            elif "product" in theme_lower or "showroom" in theme_lower or "产品" in theme_lower:
+                for index in range(4):
+                    sx = x1 + int(width * (0.12 + index * 0.2))
+                    draw.rounded_rectangle((sx, y1 + int(height * 0.26), sx + int(width * 0.13), y1 + int(height * 0.58)), radius=12, fill=soft)
+                    draw.rounded_rectangle((sx - 8, y1 + int(height * 0.64), sx + int(width * 0.13) + 8, y1 + int(height * 0.78)), radius=8, fill=accent)
+                features.append("business_product_showroom")
+            elif "marketing" in theme_lower or "campaign" in theme_lower or "广告" in theme_lower:
+                draw.rounded_rectangle((x1 + int(width * 0.12), y1 + int(height * 0.18), x1 + int(width * 0.48), y1 + int(height * 0.54)), radius=18, fill=soft)
+                draw.rounded_rectangle((x1 + int(width * 0.56), y1 + int(height * 0.22), x2 - int(width * 0.12), y1 + int(height * 0.40)), radius=12, fill=accent)
+                draw.rounded_rectangle((x1 + int(width * 0.56), y1 + int(height * 0.48), x2 - int(width * 0.20), y1 + int(height * 0.62)), radius=12, fill=soft)
+                draw.arc((x1 + int(width * 0.2), y1 + int(height * 0.52), x2 - int(width * 0.12), y2 - int(height * 0.08)), start=205, end=332, fill=accent, width=5)
+                features.append("business_marketing_studio")
+            elif "cause" in theme_lower or "effect" in theme_lower:
+                draw.ellipse((x1 + int(width * 0.12), y1 + int(height * 0.34), x1 + int(width * 0.34), y1 + int(height * 0.56)), fill=soft, outline=accent, width=4)
+                draw.ellipse((x2 - int(width * 0.34), y1 + int(height * 0.34), x2 - int(width * 0.12), y1 + int(height * 0.56)), fill=soft, outline=accent, width=4)
+                draw.line((x1 + int(width * 0.36), y1 + int(height * 0.45), x2 - int(width * 0.36), y1 + int(height * 0.45)), fill=accent, width=5)
+                features.append("business_cause_effect_workshop")
+            else:
+                draw.rounded_rectangle((x1 + int(width * 0.12), y1 + int(height * 0.48), x2 - int(width * 0.12), y1 + int(height * 0.72)), radius=18, fill=accent)
+                draw.rounded_rectangle((x1 + int(width * 0.18), y1 + int(height * 0.25), x1 + int(width * 0.42), y1 + int(height * 0.42)), radius=12, fill=soft)
+                draw.rounded_rectangle((x1 + int(width * 0.58), y1 + int(height * 0.25), x1 + int(width * 0.82), y1 + int(height * 0.42)), radius=12, fill=soft)
+                features.append("business_meeting_table")
+        elif motif == "tech":
+            draw.rounded_rectangle((x1 + int(width * 0.15), y1 + int(height * 0.18), x2 - int(width * 0.15), y1 + int(height * 0.64)), radius=22, outline=accent, width=5)
+            draw.arc((x1 + int(width * 0.16), y1 + int(height * 0.58), x2 - int(width * 0.08), y2 - int(height * 0.08)), start=200, end=340, fill=accent, width=5)
+            draw.ellipse((x1 + int(width * 0.07), y2 - int(height * 0.22), x1 + int(width * 0.24), y2 - int(height * 0.05)), outline=accent, width=4)
+            features.append("tech_device_cloud")
+        elif motif == "education":
+            draw.rounded_rectangle((x1 + int(width * 0.12), y1 + int(height * 0.16), x2 - int(width * 0.12), y1 + int(height * 0.56)), radius=22, fill=soft)
+            draw.line((x1 + int(width * 0.2), y1 + int(height * 0.3), x2 - int(width * 0.2), y1 + int(height * 0.3)), fill=accent, width=5)
+            draw.line((x1 + int(width * 0.2), y1 + int(height * 0.43), x2 - int(width * 0.3), y1 + int(height * 0.43)), fill=accent, width=5)
+            draw.rounded_rectangle((x1 + int(width * 0.18), y1 + int(height * 0.68), x1 + int(width * 0.46), y2 - int(height * 0.08)), radius=12, fill=accent)
+            draw.rounded_rectangle((x1 + int(width * 0.52), y1 + int(height * 0.62), x2 - int(width * 0.16), y2 - int(height * 0.08)), radius=12, outline=accent, width=4)
+            features.append("education_board_books")
+        elif motif == "medical":
+            draw.rounded_rectangle((x1 + int(width * 0.38), y1 + int(height * 0.2), x1 + int(width * 0.58), y2 - int(height * 0.18)), radius=12, fill=accent)
+            draw.rounded_rectangle((x1 + int(width * 0.2), y1 + int(height * 0.42), x2 - int(width * 0.2), y1 + int(height * 0.62)), radius=12, fill=accent)
+            draw.ellipse((x1 + int(width * 0.1), y2 - int(height * 0.25), x1 + int(width * 0.28), y2 - int(height * 0.07)), outline=accent, width=5)
+            features.append("medical_care_symbol")
+        elif motif == "academic":
+            for index in range(4):
+                y = y1 + int(height * (0.24 + index * 0.14))
+                draw.line((x1 + int(width * 0.18), y, x2 - int(width * 0.25), y), fill=accent, width=5)
+            draw.rounded_rectangle((x2 - int(width * 0.24), y1 + int(height * 0.18), x2 - int(width * 0.08), y2 - int(height * 0.12)), radius=16, fill=accent)
+            features.append("academic_papers_library")
+        elif motif == "sketch":
+            for offset in range(5):
+                draw.line((x1 + offset, y1 + int(height * 0.2), x2 - offset, y1 + int(height * 0.58)), fill=soft, width=2)
+                draw.line((x1 + offset, y1 + int(height * 0.58), x2 - offset, y1 + int(height * 0.2)), fill=soft, width=2)
+            draw.arc((x1 + int(width * 0.12), y1 + int(height * 0.58), x2 - int(width * 0.08), y2 - int(height * 0.05)), start=195, end=340, fill=accent, width=4)
+            features.append("sketch_storyboard_lines")
+
     draw.rounded_rectangle((0, 0, 1199, 699), radius=28, fill=background)
-    draw.ellipse((820, 70, 1110, 360), fill=soft)
-    draw.rounded_rectangle((90, 112, 690, 570), radius=54, fill=soft)
-    draw.rounded_rectangle((735, 210, 1070, 565), radius=52, outline=accent, width=5)
-    draw.ellipse((185, 220, 275, 310), fill=accent)
-    draw.rounded_rectangle((155, 320, 305, 505), radius=42, fill=background)
-    draw.ellipse((390, 205, 480, 295), fill=accent)
-    draw.rounded_rectangle((360, 305, 510, 505), radius=42, fill=background)
-    draw.rounded_rectangle((565, 250, 650, 505), radius=38, fill=background)
-    draw.polygon([(772, 472), (925, 285), (1040, 472)], fill=background)
-    draw.ellipse((842, 260, 902, 320), fill=accent)
-    draw.rounded_rectangle((805, 475, 1000, 530), radius=28, fill=accent)
+
+    if layout_key == "full_scene":
+        draw.ellipse((50, 60, 820, 620), fill=soft)
+        draw.rounded_rectangle((92, 424, 1112, 600), radius=42, fill=soft)
+        draw_style_motif((150, 210, 470, 500))
+        draw_people_cluster(660, 300, 0.88, reverse=True)
+        draw.rounded_rectangle((782, 110, 1090, 190), radius=28, outline=accent, width=4)
+    elif layout_key == "spotlight":
+        draw.ellipse((330, 92, 870, 632), fill=soft)
+        draw.rounded_rectangle((104, 120, 344, 520), radius=48, outline=accent, width=5)
+        draw_style_motif((420, 210, 780, 514))
+        draw_people_cluster(130, 360, 0.58)
+        draw_people_cluster(835, 380, 0.5, reverse=True)
+    elif layout_key == "diagonal_workshop":
+        draw.polygon([(0, 550), (1200, 170), (1200, 700), (0, 700)], fill=soft)
+        draw.rounded_rectangle((88, 104, 520, 430), radius=46, fill=soft)
+        draw_people_cluster(150, 185, 0.72)
+        draw_style_motif((760, 272, 1092, 570))
+        draw.line((560, 345, 720, 295), fill=accent, width=7)
+        draw.line((704, 278, 728, 296), fill=accent, width=7)
+        draw.line((710, 314, 728, 296), fill=accent, width=7)
+    else:
+        draw.rounded_rectangle((86, 96, 704, 584), radius=54, fill=soft)
+        draw.rounded_rectangle((760, 112, 1104, 584), radius=52, outline=accent, width=5)
+        draw.ellipse((842, 70, 1114, 342), fill=soft)
+        draw_people_cluster(185, 220, 0.92)
+        draw.rounded_rectangle((185, 505, 620, 536), radius=16, fill=accent)
+        draw_style_motif((795, 250, 1060, 520))
+
     draw.text((120, 105), "Illustration Preview", fill=text, font=title_font)
     mode = "refined prompt" if refined else "initial prompt"
     draw.text((120, 140), f"{style_hint.title()} style | {image_model.upper()} | {mode}", fill=background if style_hint == "sketch" else soft, font=body_font)
     if visual_theme:
         draw.text((120, 612), _sanitize_illustration_text(visual_theme)[:110], fill=text, font=body_font)
     image.save(output_path)
+    return features
 
 
 def _build_refined_illustration_prompt(state: dict[str, Any], style_hint: str, image_model: str) -> str:
@@ -502,18 +832,43 @@ def _build_refined_illustration_prompt(state: dict[str, Any], style_hint: str, i
         summary=summary,
         keywords=list(state["intent"].get("keywords", [])),
         audience=str(state["intent"].get("audience", "business")),
+        composition_variant=str(state.get("illustration_composition_variant", "")),
+        subject=str(state["intent"].get("illustration_subject", "")),
     )
 
 
 def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     requested_image_model = str(state.get("image_model", "local") or "local").strip().lower()
-    style_hint = _normalize_illustration_style(state.get("illustration_style"))
+    requested_style = _normalize_illustration_style(state.get("illustration_style"))
+    resolved_style = _normalize_illustration_style(state.get("intent", {}).get("resolved_illustration_style") if requested_style == "auto" else requested_style)
+    style_hint = resolved_style
     image_model = _normalize_image_model(requested_image_model)
     visual_theme = state["intent"].get("visual_theme", "intelligent illustration preview")
-    state["illustration_prompt"] = _build_illustration_prompt(visual_theme=visual_theme, style_hint=style_hint, image_model=image_model, summary=str(state["intent"].get("summary", "")), keywords=list(state["intent"].get("keywords", [])), audience=str(state["intent"].get("audience", "business")))
+    sanitized_keywords = _sanitize_keywords(state["intent"].get("keywords", []))
+    variant_key = "|".join(
+        [
+            str(state.get("current_slide", "")),
+            str(state.get("text_content", "")),
+            str(state["intent"].get("summary", "")),
+            ",".join(sanitized_keywords),
+        ]
+    )
+    composition_variant = _select_illustration_composition_variant(visual_theme, style_hint, image_model, state.get("current_slide", ""), variant_key)
+    state["illustration_composition_variant"] = composition_variant
+    state["illustration_prompt"] = _build_illustration_prompt(
+        visual_theme=visual_theme,
+        style_hint=style_hint,
+        image_model=image_model,
+        summary=str(state["intent"].get("summary", "")),
+        keywords=sanitized_keywords,
+        audience=str(state["intent"].get("audience", "business")),
+        composition_variant=composition_variant,
+        subject=str(state["intent"].get("illustration_subject", "")),
+    )
     output_path = ensure_output_dir() / f"{state.get('request_id', 'req')}_illustration_slide_{state['current_slide']}.png"
     generation_source = "local"
     generation_warning = ""
+    local_render_features: list[str] = []
     if image_model in {"wanx", "flux"}:
         try:
             from backend.image_clients import generate_flux_image, generate_wanx_image
@@ -527,10 +882,27 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
             generation_warning = str(exc)
             append_log(state, f"{image_model.upper()} illustration fallback enabled: {exc}", "warning")
     if generation_source == "local":
-        _write_illustration_png(output_path, visual_theme=visual_theme, style_hint=style_hint, image_model=image_model)
+        local_render_features = _write_illustration_png(
+            output_path,
+            visual_theme=visual_theme,
+            style_hint=style_hint,
+            image_model=image_model,
+            variant_key=variant_key,
+            composition_variant=composition_variant,
+        )
     state["illustration_image"] = str(output_path)
-    initial_clip_score = _estimate_clip_score(state.get("text_content", ""), state["intent"].get("visual_theme", ""), _sanitize_keywords(state["intent"].get("keywords", [])), style_hint, image_model)
+    initial_quality_style = requested_style if requested_style == "auto" else style_hint
+    initial_quality = _estimate_illustration_quality(
+        state.get("text_content", ""),
+        state["intent"].get("visual_theme", ""),
+        sanitized_keywords,
+        initial_quality_style,
+        image_model,
+        state["illustration_prompt"],
+    )
+    initial_clip_score = float(initial_quality["score"])
     clip_score = initial_clip_score
+    final_quality = dict(initial_quality)
     regenerated = False
     regenerate_attempts = 0
     regenerate_action = "none"
@@ -540,11 +912,27 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
         state["illustration_prompt_retry"] = _build_refined_illustration_prompt(state, style_hint, image_model)
         if generation_source == "local":
             refined_style = "business" if style_hint == "auto" else style_hint
-            _write_illustration_png(output_path, visual_theme=visual_theme, style_hint=refined_style, image_model=image_model, refined=True)
+            local_render_features = _write_illustration_png(
+                output_path,
+                visual_theme=visual_theme,
+                style_hint=refined_style,
+                image_model=image_model,
+                refined=True,
+                variant_key=variant_key,
+                composition_variant=composition_variant,
+            )
             regenerated = True
             regenerate_attempts = 1
             regenerate_action = "local_refined_prompt"
-            refined_score = _estimate_clip_score(state.get("text_content", ""), state["intent"].get("visual_theme", ""), _sanitize_keywords(state["intent"].get("keywords", [])), refined_style, image_model)
+            final_quality = _estimate_illustration_quality(
+                state.get("text_content", ""),
+                state["intent"].get("visual_theme", ""),
+                sanitized_keywords,
+                refined_style,
+                image_model,
+                state["illustration_prompt_retry"],
+            )
+            refined_score = float(final_quality["score"])
             clip_score = max(initial_clip_score, refined_score)
             append_log(state, f"Illustration regenerated with refined local prompt: score {initial_clip_score} -> {clip_score}.", "warning")
         else:
@@ -555,9 +943,16 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
         "initial_clip_score": initial_clip_score,
         "score_threshold": ILLUSTRATION_SCORE_THRESHOLD,
         "score_source": "heuristic",
+        "initial_quality_components": initial_quality,
+        "quality_components": final_quality,
+        "prompt_quality_notes": ["16:9 composition", "composition variant", "clean text space", "negative prompt", "presentation-safe details"],
+        "negative_prompt_terms": sorted(ILLUSTRATION_FORBIDDEN_TERMS),
+        "local_render_features": local_render_features,
+        "composition_variant": composition_variant,
         "requested_image_model": requested_image_model,
         "image_model": image_model,
         "illustration_style": style_hint,
+        "requested_illustration_style": requested_style,
         "external_provider_requested": image_model in {"wanx", "flux"},
         "external_provider": image_model if image_model in {"wanx", "flux"} else "",
         "resolved_image_source": generation_source,
@@ -574,7 +969,7 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     state["intent"]["initial_clip_score"] = initial_clip_score
     state["intent"]["image_model"] = image_model
     state["intent"]["illustration_style"] = style_hint
-    state["intent"]["keywords"] = _sanitize_keywords(state["intent"].get("keywords", []))
+    state["intent"]["keywords"] = sanitized_keywords
     return append_log(state, "Illustration preview asset generated.")
 
 
