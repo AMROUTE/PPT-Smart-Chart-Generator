@@ -143,6 +143,8 @@ def _record_job(result: dict[str, Any], upload_token: str, source_type: str, sli
         image_model=image_model,
         status=result.get("status", "completed"),
         final_pptx_path=result.get("final_pptx_path", ""),
+        chart_theme=chart_theme,
+        result_payload=result,
     )
 
 
@@ -411,6 +413,7 @@ def process_ppt_batch(
                 image_model=resolved_model,
                 status="failed",
                 final_pptx_path="",
+                chart_theme=resolved_theme,
             )
             slide_payloads.append(
                 {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from datetime import datetime
 from functools import lru_cache
@@ -22,6 +23,56 @@ PIPELINE_NODES = ["parse_ppt", "semantic_analysis", "generate_chart", "generate_
 STEP_PROGRESS = {"parse_ppt": 20, "semantic_analysis": 40, "generate_chart": 65, "generate_illustration": 85, "save_pptx": 100}
 
 ILLUSTRATION_FORBIDDEN_TERMS = {"chart", "charts", "graph", "graphs", "dashboard", "bar", "line", "pie", "scatter", "heatmap"}
+ILLUSTRATION_SCORE_THRESHOLD = 6.5
+ILLUSTRATION_STYLE_PROFILES = {
+    "auto": {
+        "scene": "clear business context with people, place, and activity",
+        "mood": "polished, presentation-ready, neutral professional lighting",
+        "palette": ("#183250", "#2dd4bf", "#d8ebff", "#f7fbff"),
+    },
+    "business": {
+        "scene": "modern office collaboration, meeting table, people discussing a plan",
+        "mood": "confident, clean, executive presentation style",
+        "palette": ("#24324a", "#f59e0b", "#e5edf7", "#ffffff"),
+    },
+    "tech": {
+        "scene": "software team workspace with devices, cloud services, and product flow",
+        "mood": "precise, futuristic, crisp blue-green lighting",
+        "palette": ("#10233f", "#38bdf8", "#a7f3d0", "#f8fafc"),
+    },
+    "education": {
+        "scene": "classroom learning moment with teacher, students, books, and board space",
+        "mood": "warm, encouraging, accessible learning atmosphere",
+        "palette": ("#254336", "#facc15", "#dcfce7", "#ffffff"),
+    },
+    "medical": {
+        "scene": "healthcare consultation with clinician, patient support, and care setting",
+        "mood": "calm, trustworthy, clean clinical environment",
+        "palette": ("#173f46", "#22c55e", "#ccfbf1", "#ffffff"),
+    },
+    "academic": {
+        "scene": "research discussion with papers, laptop, library or seminar context",
+        "mood": "thoughtful, rigorous, scholarly but modern",
+        "palette": ("#312e81", "#a78bfa", "#ede9fe", "#ffffff"),
+    },
+    "sketch": {
+        "scene": "hand-drawn storyboard of people solving the slide topic",
+        "mood": "lightweight, human, whiteboard sketch style",
+        "palette": ("#2f3645", "#64748b", "#f8fafc", "#ffffff"),
+    },
+}
+
+INTENT_TO_CHART_TYPE = {
+    "comparison": "bar",
+    "trend": "line",
+    "composition": "pie",
+    "distribution": "bar",
+    "correlation": "scatter",
+}
+
+
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
 
 
 def _normalize_chart_override(chart_type: str | None) -> str:
@@ -45,6 +96,125 @@ def _normalize_chart_theme(theme: str | None) -> str:
     return normalized if normalized in {"tech", "business", "minimal", "academic"} else "tech"
 
 
+def _looks_like_time_label(value: Any) -> bool:
+    text = str(value).strip().lower()
+    markers = ["q1", "q2", "q3", "q4", "202", "201", "week", "wk", "jan", "feb", "mar", "apr", "may", "jun", "月", "年", "季度", "周"]
+    return any(marker in text for marker in markers)
+
+
+def _numeric_column_indexes(columns: list[Any], rows: list[list[Any]]) -> list[int]:
+    indexes: list[int] = []
+    for index, _column in enumerate(columns):
+        values = [row[index] for row in rows if len(row) > index]
+        numeric_count = 0
+        for value in values:
+            try:
+                float(value)
+                numeric_count += 1
+            except (TypeError, ValueError):
+                continue
+        if values and numeric_count >= max(1, len(values) // 2):
+            indexes.append(index)
+    return indexes
+
+
+def _recommend_chart_intent(text_content: str, columns: list[Any], rows: list[list[Any]]) -> dict[str, Any]:
+    normalized = (text_content or "").lower()
+    signals: list[str] = []
+    alternatives: list[str] = []
+
+    time_markers = ["202", "201", "年", "月", "周", "季度", "近", "过去", "最近", "从", "到", "逐年", "持续", "趋势", "week", "quarter"]
+    trend_markers = ["增长", "下降", "上升", "减少", "回升", "降低", "加快", "增加", "越来越", "逐步", "一路往上涨", "trend", "growth", "change", "decline"]
+    comparison_markers = ["比", "高于", "低于", "超过", "对比", "相比", "最高", "最低", "差异", "分别为", "次之", "compare", "comparison", "higher", "lower"]
+    composition_markers = ["占", "占比", "构成", "组成", "份额", "比例", "来自", "来源", "包括", "由", "部分组成", "share", "portion", "composition", "ratio"]
+    distribution_markers = ["分布", "集中", "区间", "大多数", "主要位于", "人数最多", "中等水平", "distribution", "range", "bucket", "frequency"]
+    correlation_markers = ["相关", "关系", "影响", "随着", "投入", "转化率", "留存率", "故障率", "体脂率", "correlation", "relationship", "impact"]
+
+    numeric_indexes = _numeric_column_indexes(columns, rows)
+    first_column_values = [row[0] for row in rows if row]
+    time_label_count = sum(1 for value in first_column_values[: min(6, len(first_column_values))] if _looks_like_time_label(value))
+    has_time_labels = bool(first_column_values) and time_label_count >= max(1, min(3, len(first_column_values)))
+    has_yue_correlation = "越来越" not in normalized and re.search(r"越.+越", normalized) is not None
+    has_time = _contains_any(normalized, time_markers) or has_time_labels
+    has_trend = _contains_any(normalized, trend_markers)
+    has_composition = _contains_any(normalized, composition_markers)
+    has_distribution = _contains_any(normalized, distribution_markers)
+    has_correlation = has_yue_correlation or _contains_any(normalized, correlation_markers) or ("增加后" in normalized and ("提升" in normalized or "下降" in normalized))
+    has_comparison = _contains_any(normalized, comparison_markers)
+
+    if has_time_labels:
+        signals.append("首列呈现时间序列标签")
+    if len(numeric_indexes) >= 2:
+        signals.append("表格包含两个及以上数值列")
+    if has_time and has_trend:
+        signals.append("文本同时包含时间线索和变化方向")
+    elif has_time:
+        signals.append("文本或表格包含时间线索")
+    if has_composition:
+        signals.append("文本包含占比、构成、份额或来源结构")
+    if has_distribution:
+        signals.append("文本描述区间、集中程度或分布状态")
+    if has_correlation:
+        signals.append("文本表达变量之间的影响或相关关系")
+    if has_comparison:
+        signals.append("文本表达对象之间的高低或差异比较")
+
+    if has_correlation:
+        intent = "correlation"
+        confidence = 0.9 if len(numeric_indexes) >= 2 else 0.82
+        alternatives = ["line", "bar"]
+    elif has_composition:
+        intent = "composition"
+        confidence = 0.9
+        alternatives = ["bar"]
+    elif has_distribution:
+        intent = "distribution"
+        confidence = 0.84
+        alternatives = ["histogram", "box"]
+    elif has_time and (has_trend or has_time_labels):
+        intent = "trend"
+        confidence = 0.88 if has_trend else 0.8
+        alternatives = ["area", "bar"]
+    elif has_comparison:
+        intent = "comparison"
+        confidence = 0.82
+        alternatives = ["line"]
+    elif len(numeric_indexes) >= 3 and len(rows) >= 4:
+        intent = "distribution"
+        confidence = 0.72
+        alternatives = ["heatmap", "bar"]
+        signals.append("多数值列适合展示数值分布或强弱差异")
+    elif len(numeric_indexes) >= 2 and len(columns) <= 3:
+        intent = "correlation"
+        confidence = 0.72
+        alternatives = ["bar"]
+        signals.append("少量字段中存在双数值列，按关系探索处理")
+    elif len(rows) > 8 and len(numeric_indexes) == 1:
+        intent = "trend" if has_time else "distribution"
+        confidence = 0.68
+        alternatives = ["bar"]
+        signals.append("单数值列且数据点较多")
+    else:
+        intent = "comparison"
+        confidence = 0.62
+        alternatives = ["line", "pie"]
+        signals.append("未命中强语义关键词，默认按类别比较处理")
+
+    chart_type = INTENT_TO_CHART_TYPE[intent]
+    if intent == "distribution" and "histogram" in alternatives and len(numeric_indexes) == 1 and len(rows) > 8:
+        chart_type = "histogram"
+
+    reason = f"识别为 {intent}，推荐 {chart_type} 图；依据：" + "、".join(signals[:4])
+    return {
+        "intent_category": intent,
+        "chart_type": chart_type,
+        "confidence": round(confidence, 2),
+        "signals": signals,
+        "alternatives": alternatives,
+        "reason": reason,
+    }
+
+
 def _sanitize_illustration_text(text: str) -> str:
     sanitized = text or ""
     for term in ILLUSTRATION_FORBIDDEN_TERMS:
@@ -63,17 +233,29 @@ def _sanitize_keywords(keywords: list[str]) -> list[str]:
     return sanitized
 
 
+def _illustration_style_profile(style_hint: str) -> dict[str, Any]:
+    return ILLUSTRATION_STYLE_PROFILES.get(style_hint, ILLUSTRATION_STYLE_PROFILES["auto"])
+
+
 def _build_illustration_prompt(visual_theme: str, style_hint: str, image_model: str, summary: str, keywords: list[str], audience: str) -> str:
     sanitized_theme = _sanitize_illustration_text(visual_theme) or "business scenario illustration"
     sanitized_summary = _sanitize_illustration_text(summary)
     sanitized_keywords = _sanitize_keywords(keywords)
     style_text = "auto" if style_hint == "auto" else style_hint
-    parts = [f"Theme: {sanitized_theme}", f"Style: {style_text}", f"Audience: {audience or 'business'}"]
+    profile = _illustration_style_profile(style_hint)
+    parts = [
+        f"Theme: {sanitized_theme}",
+        f"Style: {style_text}",
+        f"Audience: {audience or 'business'}",
+        f"Scene: {profile['scene']}",
+        f"Mood: {profile['mood']}",
+    ]
     if sanitized_summary:
         parts.append(f"Direction: {sanitized_summary}")
     if sanitized_keywords:
         parts.append(f"Keywords: {', '.join(sanitized_keywords[:4])}")
-    parts.append("Avoid charts, axes, dashboards, or explicit statistical graphics in the illustration.")
+    parts.append("Create a scene illustration only: people, objects, environment, and concept metaphor.")
+    parts.append("Avoid charts, axes, dashboards, data panels, tables, bar shapes, line plots, pie slices, or explicit statistical graphics.")
     parts.append(f"Model: {image_model}")
     return " | ".join(parts)
 
@@ -153,44 +335,28 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
     columns = table.get("columns", [])
     rows = table.get("rows", [])
     table_summary = f"columns={columns}; sample_rows={rows[:4]}"
+    recommendation = _recommend_chart_intent(state.get("text_content", ""), columns, rows)
 
-    def looks_like_time_label(value: Any) -> bool:
-        text = str(value).lower()
-        markers = ["q1", "q2", "q3", "q4", "202", "week", "wk", "jan", "feb", "mar"]
-        return any(marker in text for marker in markers)
-
-    numeric_column_indexes: list[int] = []
-    for index, column in enumerate(columns):
-        values = [row[index] for row in rows if len(row) > index]
-        numeric_count = 0
-        for value in values:
-            try:
-                float(value)
-                numeric_count += 1
-            except (TypeError, ValueError):
-                continue
-        if values and numeric_count >= max(1, len(values) // 2):
-            numeric_column_indexes.append(index)
-
-    first_column_values = [row[0] for row in rows if row]
-    numeric_rows = len(rows)
-    chart_type = "bar"
-    if any(keyword in text_content for keyword in ["share", "portion", "composition"]):
-        chart_type = "pie"
-    elif any(keyword in text_content for keyword in ["trend", "growth", "change"]):
-        chart_type = "line"
-    elif first_column_values and all(looks_like_time_label(value) for value in first_column_values[: min(4, len(first_column_values))]):
-        chart_type = "line"
-    elif len(numeric_column_indexes) >= 2 and len(columns) <= 3:
-        chart_type = "scatter"
-    elif len(numeric_column_indexes) >= 3 and numeric_rows >= 4:
-        chart_type = "heatmap"
-    elif numeric_rows <= 6 and len(numeric_column_indexes) == 1:
-        chart_type = "bar"
-    elif numeric_rows > 8 and len(numeric_column_indexes) == 1:
-        chart_type = "line"
-
-    heuristic_result = {"task": "chart_generation", "chart_type": chart_override or chart_type, "chart_theme": chart_theme, "audience": "business", "summary": "Inferred from slide text, label pattern, and extracted table structure.", "reason": "Heuristic semantic inference based on text, labels, and table shape.", "visual_theme": "business office collaboration" if illustration_style == "auto" else f"{illustration_style} visual scene", "palette": ["deep-blue", "sky-blue"], "keywords": ["office space", "team collaboration", "business atmosphere"], "source": "heuristic", "semantic_mode": "local", "image_model": image_model, "illustration_style": illustration_style}
+    heuristic_result = {
+        "task": "chart_generation",
+        "chart_type": chart_override or recommendation["chart_type"],
+        "chart_theme": chart_theme,
+        "audience": "business",
+        "summary": "Inferred from slide text, label pattern, and extracted table structure.",
+        "reason": recommendation["reason"],
+        "intent_category": recommendation["intent_category"],
+        "recommendation_confidence": recommendation["confidence"],
+        "recommendation_signals": recommendation["signals"],
+        "chart_alternatives": recommendation["alternatives"],
+        "chart_recommendation": recommendation,
+        "visual_theme": "business office collaboration" if illustration_style == "auto" else f"{illustration_style} visual scene",
+        "palette": ["deep-blue", "sky-blue"],
+        "keywords": ["office space", "team collaboration", "business atmosphere"],
+        "source": "heuristic",
+        "semantic_mode": "local",
+        "image_model": image_model,
+        "illustration_style": illustration_style,
+    }
 
     if semantic_mode == "qwen":
         try:
@@ -203,6 +369,11 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
                 "audience": llm_result["audience"],
                 "summary": llm_result["title"],
                 "reason": llm_result["reason"] if not chart_override else f"Chart type manually overridden to {chart_override} while keeping semantic result.",
+                "intent_category": recommendation["intent_category"],
+                "recommendation_confidence": recommendation["confidence"],
+                "recommendation_signals": recommendation["signals"],
+                "chart_alternatives": recommendation["alternatives"],
+                "chart_recommendation": recommendation,
                 "visual_theme": llm_result["visual_theme"] if illustration_style == "auto" else f"{illustration_style} visual scene",
                 "palette": llm_result["palette"],
                 "keywords": _sanitize_keywords(llm_result["keywords"]),
@@ -219,7 +390,7 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
             return append_log(state, "Semantic analysis completed with heuristic fallback.")
 
     if chart_override:
-        heuristic_result["reason"] = f"Chart type manually overridden to {chart_override}."
+        heuristic_result["reason"] = f"Chart type manually overridden to {chart_override}; original recommendation was {recommendation['chart_type']} for {recommendation['intent_category']}."
     state["intent"] = heuristic_result
     return append_log(state, "Semantic analysis completed with local heuristic.")
 
@@ -280,25 +451,56 @@ def _write_chart_fallback_png(output_path: Path, slide_number: int, tables: list
     return png_path
 
 
-def _write_illustration_png(output_path: Path, visual_theme: str, style_hint: str, image_model: str) -> None:
+def _write_illustration_png(output_path: Path, visual_theme: str, style_hint: str, image_model: str, refined: bool = False) -> None:
     from PIL import Image, ImageDraw, ImageFont
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", (1200, 700), "#183250")
+    profile = _illustration_style_profile(style_hint)
+    background, accent, soft, text = profile["palette"]
+    image = Image.new("RGB", (1200, 700), background)
     draw = ImageDraw.Draw(image)
     title_font = ImageFont.load_default()
     body_font = ImageFont.load_default()
-    draw.rounded_rectangle((0, 0, 1199, 699), radius=28, fill="#183250")
-    draw.text((120, 110), "Illustration Preview", fill="#f7fbff", font=title_font)
-    draw.text((120, 145), f"{style_hint.title()} style | {image_model.upper()}", fill="#d8ebff", font=body_font)
-    draw.rounded_rectangle((120, 170, 430, 480), radius=44, outline="#2dd4bf", width=3)
-    draw.ellipse((171, 221, 379, 429), outline="#2dd4bf", width=4)
-    draw.line((205, 362, 260, 240, 322, 322, 380, 214), fill="#ecfeff", width=10)
+    draw.rounded_rectangle((0, 0, 1199, 699), radius=28, fill=background)
+    draw.ellipse((820, 70, 1110, 360), fill=soft)
+    draw.rounded_rectangle((90, 112, 690, 570), radius=54, fill=soft)
+    draw.rounded_rectangle((735, 210, 1070, 565), radius=52, outline=accent, width=5)
+    draw.ellipse((185, 220, 275, 310), fill=accent)
+    draw.rounded_rectangle((155, 320, 305, 505), radius=42, fill=background)
+    draw.ellipse((390, 205, 480, 295), fill=accent)
+    draw.rounded_rectangle((360, 305, 510, 505), radius=42, fill=background)
+    draw.rounded_rectangle((565, 250, 650, 505), radius=38, fill=background)
+    draw.polygon([(772, 472), (925, 285), (1040, 472)], fill=background)
+    draw.ellipse((842, 260, 902, 320), fill=accent)
+    draw.rounded_rectangle((805, 475, 1000, 530), radius=28, fill=accent)
+    draw.text((120, 105), "Illustration Preview", fill=text, font=title_font)
+    mode = "refined prompt" if refined else "initial prompt"
+    draw.text((120, 140), f"{style_hint.title()} style | {image_model.upper()} | {mode}", fill=background if style_hint == "sketch" else soft, font=body_font)
+    if visual_theme:
+        draw.text((120, 612), _sanitize_illustration_text(visual_theme)[:110], fill=text, font=body_font)
     image.save(output_path)
 
 
+def _build_refined_illustration_prompt(state: dict[str, Any], style_hint: str, image_model: str) -> str:
+    refined_style = "business" if style_hint == "auto" else style_hint
+    summary = str(state["intent"].get("summary", ""))
+    if summary:
+        summary = f"{summary}. Use a concrete human scene and clear industry context."
+    else:
+        summary = "Use a concrete human scene and clear industry context."
+    return _build_illustration_prompt(
+        visual_theme=str(state["intent"].get("visual_theme", "business scenario illustration")),
+        style_hint=refined_style,
+        image_model=image_model,
+        summary=summary,
+        keywords=list(state["intent"].get("keywords", [])),
+        audience=str(state["intent"].get("audience", "business")),
+    )
+
+
 def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
+    requested_image_model = str(state.get("image_model", "local") or "local").strip().lower()
     style_hint = _normalize_illustration_style(state.get("illustration_style"))
-    image_model = _normalize_image_model(state.get("image_model"))
+    image_model = _normalize_image_model(requested_image_model)
     visual_theme = state["intent"].get("visual_theme", "intelligent illustration preview")
     state["illustration_prompt"] = _build_illustration_prompt(visual_theme=visual_theme, style_hint=style_hint, image_model=image_model, summary=str(state["intent"].get("summary", "")), keywords=list(state["intent"].get("keywords", [])), audience=str(state["intent"].get("audience", "business")))
     output_path = Path(get_settings().output_dir) / f"{state.get('request_id', 'req')}_illustration_slide_{state['current_slide']}.png"
@@ -319,9 +521,49 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     if generation_source == "local":
         _write_illustration_png(output_path, visual_theme=visual_theme, style_hint=style_hint, image_model=image_model)
     state["illustration_image"] = str(output_path)
-    clip_score = _estimate_clip_score(state.get("text_content", ""), state["intent"].get("visual_theme", ""), _sanitize_keywords(state["intent"].get("keywords", [])), style_hint, image_model)
-    state["illustration_meta"] = {"clip_score": clip_score, "score_source": "heuristic", "image_model": image_model, "illustration_style": style_hint, "generation_source": generation_source, "generation_warning": generation_warning, "regenerate_hint": clip_score < 6.5}
+    initial_clip_score = _estimate_clip_score(state.get("text_content", ""), state["intent"].get("visual_theme", ""), _sanitize_keywords(state["intent"].get("keywords", [])), style_hint, image_model)
+    clip_score = initial_clip_score
+    regenerated = False
+    regenerate_attempts = 0
+    regenerate_action = "none"
+    regenerate_reason = ""
+    if initial_clip_score < ILLUSTRATION_SCORE_THRESHOLD:
+        regenerate_reason = f"Initial score {initial_clip_score} is below threshold {ILLUSTRATION_SCORE_THRESHOLD}."
+        state["illustration_prompt_retry"] = _build_refined_illustration_prompt(state, style_hint, image_model)
+        if generation_source == "local":
+            refined_style = "business" if style_hint == "auto" else style_hint
+            _write_illustration_png(output_path, visual_theme=visual_theme, style_hint=refined_style, image_model=image_model, refined=True)
+            regenerated = True
+            regenerate_attempts = 1
+            regenerate_action = "local_refined_prompt"
+            refined_score = _estimate_clip_score(state.get("text_content", ""), state["intent"].get("visual_theme", ""), _sanitize_keywords(state["intent"].get("keywords", [])), refined_style, image_model)
+            clip_score = max(initial_clip_score, refined_score)
+            append_log(state, f"Illustration regenerated with refined local prompt: score {initial_clip_score} -> {clip_score}.", "warning")
+        else:
+            regenerate_action = "manual_review_recommended"
+            append_log(state, f"Illustration score is below threshold; manual review recommended: {initial_clip_score}.", "warning")
+    state["illustration_meta"] = {
+        "clip_score": clip_score,
+        "initial_clip_score": initial_clip_score,
+        "score_threshold": ILLUSTRATION_SCORE_THRESHOLD,
+        "score_source": "heuristic",
+        "requested_image_model": requested_image_model,
+        "image_model": image_model,
+        "illustration_style": style_hint,
+        "external_provider_requested": image_model in {"wanx", "flux"},
+        "external_provider": image_model if image_model in {"wanx", "flux"} else "",
+        "resolved_image_source": generation_source,
+        "fallback_to_local": generation_source == "local" and image_model in {"wanx", "flux"},
+        "generation_source": generation_source,
+        "generation_warning": generation_warning,
+        "regenerate_hint": clip_score < ILLUSTRATION_SCORE_THRESHOLD,
+        "regenerated": regenerated,
+        "regenerate_attempts": regenerate_attempts,
+        "regenerate_action": regenerate_action,
+        "regenerate_reason": regenerate_reason,
+    }
     state["intent"]["clip_score"] = clip_score
+    state["intent"]["initial_clip_score"] = initial_clip_score
     state["intent"]["image_model"] = image_model
     state["intent"]["illustration_style"] = style_hint
     state["intent"]["keywords"] = _sanitize_keywords(state["intent"].get("keywords", []))
@@ -344,6 +586,9 @@ def save_pptx_node(state: dict[str, Any]) -> dict[str, Any]:
             if save_target != final_path:
                 shutil.move(str(save_target), str(final_path))
             state["final_pptx_path"] = str(final_path)
+            layout = state.get("intent", {}).get("layout", {})
+            if layout.get("layout_warning"):
+                append_log(state, f"PPT layout review recommended: overlap score {layout.get('overlap_score')}.", "warning")
             return append_log(state, "Enhanced PPT saved with inserted chart assets.")
         except Exception as exc:
             if save_target != final_path and save_target.exists():
@@ -446,4 +691,3 @@ def run_pipeline(payload: PipelineInput | dict[str, Any]) -> dict[str, Any]:
 
 def export_pipeline_mermaid() -> str:
     return get_pipeline_app().get_graph().draw_mermaid()
-

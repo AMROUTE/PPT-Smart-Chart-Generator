@@ -40,3 +40,7 @@ export function requestSlideOutline(formData) {
 export function requestJobs(limit = 30) {
   return request(`/api/jobs?limit=${limit}`);
 }
+
+export function requestJobDetail(requestId) {
+  return request(`/api/jobs/${encodeURIComponent(requestId)}`);
+}

@@ -92,18 +92,81 @@
 └── requirements.txt
 ```
 
-## 启动方式
+## 本地部署与启动
 
-### 1. 后端
+本地开发推荐使用“后端 FastAPI + 前端 Vite dev server”的方式启动：
+
+- 后端地址：`http://127.0.0.1:8000`
+- 前端地址：`http://127.0.0.1:5173`
+- Vite 会把 `/api` 和 `/assets` 请求代理到本地后端。
+
+### 0. 环境要求
+
+- Python 3.12 推荐，项目 Docker 镜像也使用 Python 3.12。
+- Node.js 20 推荐，前端 Docker 构建也使用 Node 20。
+- macOS / Linux 可直接使用下面命令；Windows 用户请把虚拟环境激活命令替换为 `.venv\Scripts\activate`。
+
+### 1. 准备后端环境
+
+在项目根目录执行：
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 2. 配置可选环境变量
+
+不配置外部模型 Key 也可以本地启动，系统会使用本地规则语义分析和本地配图预览。
+
+如果需要启用千问语义分析或线上配图，在项目根目录创建 `.env`：
+
+```env
+ENABLE_QWEN_API=1
+QWEN_API_KEY=your-qwen-api-key
+QWEN_MODEL=qwen-plus
+
+# 可选：通义万相配图，未设置时会尝试复用 QWEN_API_KEY
+WANX_API_KEY=your-wanx-api-key
+WANX_MODEL=wan2.6-t2i
+
+# 可选：Flux 配图
+FLUX_API_KEY=your-flux-api-key
+FLUX_MODEL_ENDPOINT=flux-pro-1.1
+```
+
+如果只想离线演示或暂时没有 Key，可以写成：
+
+```env
+ENABLE_QWEN_API=0
+```
+
+后端会自动创建并使用这些本地目录：
+
+- `data/uploads`
+- `outputs`
+- `outputs/previews`
+- `logs`
+
+### 3. 启动后端
+
+保持虚拟环境已激活，在项目根目录执行：
+
+```bash
 python app.py
 ```
 
-默认启动在 `http://127.0.0.1:8000`。
+后端默认监听 `http://127.0.0.1:8000`。也可以使用等价的 Uvicorn 命令：
 
-### 2. 前端
+```bash
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+### 4. 启动前端
+
+另开一个终端：
 
 ```bash
 cd frontend
@@ -111,7 +174,29 @@ npm install
 npm run dev
 ```
 
-默认开发地址为 `http://127.0.0.1:5173`，并会把 `/api` 和 `/assets` 请求代理到本地 Python 服务。
+启动后访问 `http://127.0.0.1:5173`。前端开发服务器会把接口和生成资源代理到 `http://127.0.0.1:8000`。
+
+### 5. 验证本地服务
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+浏览器打开前端后，可以先使用文本演示模式输入：
+
+```text
+营收: 120
+成本: 80
+利润: 40
+```
+
+如果返回图表、配图预览和日志，说明本地部署已正常工作。
+
+### 6. 停止服务
+
+- 后端终端按 `Ctrl+C`。
+- 前端终端按 `Ctrl+C`。
+- 如果启用了虚拟环境，可以执行 `deactivate` 退出。
 
 ## 当前可用功能
 

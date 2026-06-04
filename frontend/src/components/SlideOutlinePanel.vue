@@ -11,6 +11,65 @@ defineProps({
 });
 
 const emit = defineEmits(["select-slide"]);
+
+function diagnosticsOf(item) {
+  return item?.diagnostics || {};
+}
+
+function numericValue(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function pageKind(item) {
+  const diagnostics = diagnosticsOf(item);
+  if (item?.is_empty || diagnostics.is_empty) {
+    return { label: "空页", className: "bg-gray-100 text-gray-500" };
+  }
+  if (numericValue(item?.table_count ?? diagnostics.table_count) > 0) {
+    return { label: "表格页", className: "bg-blue-100 text-blue-700" };
+  }
+  if (numericValue(item?.picture_count ?? diagnostics.picture_count) > 0) {
+    return { label: "图片页", className: "bg-emerald-100 text-emerald-700" };
+  }
+  if (numericValue(diagnostics.non_empty_text_shape_count) > 0 || item?.text_content) {
+    return { label: "文本页", className: "bg-amber-100 text-amber-700" };
+  }
+  return { label: "待复核", className: "bg-red-100 text-red-700" };
+}
+
+function diagnosticBadges(item) {
+  const diagnostics = diagnosticsOf(item);
+  const badges = [];
+  const pictureCount = numericValue(item?.picture_count ?? diagnostics.picture_count);
+  const placeholderCount = numericValue(item?.placeholder_count ?? diagnostics.placeholder_count);
+  const inferred = Boolean(diagnostics.has_inferred_table);
+  const textCount = numericValue(diagnostics.non_empty_text_shape_count);
+
+  if (pictureCount > 0) {
+    badges.push(`${pictureCount} 图`);
+  }
+  if (placeholderCount > 0) {
+    badges.push(`${placeholderCount} 占位`);
+  }
+  if (textCount > 0) {
+    badges.push(`${textCount} 文本块`);
+  }
+  if (inferred) {
+    badges.push("文本推断表格");
+  }
+  return badges;
+}
+
+function diagnosticMetrics(item) {
+  const diagnostics = diagnosticsOf(item);
+  return [
+    { label: "表格", value: numericValue(item?.table_count ?? diagnostics.table_count) },
+    { label: "图片", value: numericValue(item?.picture_count ?? diagnostics.picture_count) },
+    { label: "文本块", value: numericValue(diagnostics.non_empty_text_shape_count) },
+    { label: "元素", value: numericValue(item?.shape_count ?? diagnostics.shape_count) },
+  ];
+}
 </script>
 
 <template>
@@ -36,10 +95,36 @@ const emit = defineEmits(["select-slide"]);
         @click="emit('select-slide', item.slide_number)"
       >
         <div class="flex items-start justify-between gap-3">
-          <strong class="text-sm font-semibold tracking-tight text-gray-900">第 {{ item.slide_number }} 页</strong>
-          <span class="text-xs text-gray-400">{{ item.table_count }} 个表格 · {{ item.shape_count }} 个元素</span>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <strong class="text-sm font-semibold tracking-tight text-gray-900">第 {{ item.slide_number }} 页</strong>
+              <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="pageKind(item).className">
+                {{ pageKind(item).label }}
+              </span>
+            </div>
+            <div v-if="diagnosticBadges(item).length" class="mt-2 flex flex-wrap gap-1.5">
+              <span
+                v-for="badge in diagnosticBadges(item)"
+                :key="badge"
+                class="rounded-full border border-gray-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-gray-500"
+              >
+                {{ badge }}
+              </span>
+            </div>
+          </div>
+          <span class="shrink-0 text-xs text-gray-400">{{ item.table_count }} 个表格 · {{ item.shape_count }} 个元素</span>
         </div>
-        <p class="mt-2 text-sm leading-6 text-gray-500">{{ item.text_content || "该页暂无可提取文本。" }}</p>
+        <p class="mt-3 max-h-24 overflow-hidden text-sm leading-6 text-gray-500">{{ item.text_content || "该页暂无可提取文本。" }}</p>
+        <div class="mt-4 grid grid-cols-4 gap-2 border-t border-gray-100 pt-3">
+          <div
+            v-for="metric in diagnosticMetrics(item)"
+            :key="metric.label"
+            class="min-w-0"
+          >
+            <p class="text-[10px] font-medium text-gray-400">{{ metric.label }}</p>
+            <p class="mt-1 text-sm font-semibold text-gray-800">{{ metric.value }}</p>
+          </div>
+        </div>
         <small v-if="item.table_titles?.length" class="mt-2 block text-xs text-gray-400">
           表格：{{ item.table_titles.join("、") }}
         </small>

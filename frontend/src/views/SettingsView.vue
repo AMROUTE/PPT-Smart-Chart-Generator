@@ -8,18 +8,18 @@ const { settings, resetSettings } = useUserSettings();
 
 <template>
   <main class="w-full">
-    <div class="mx-auto w-full max-w-6xl p-8">
+    <div class="mx-auto w-full max-w-6xl p-4 sm:p-6 xl:p-8">
       <div class="space-y-8">
-        <section class="rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+        <section class="rounded-2xl border border-white/50 bg-white/60 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl sm:p-8">
           <p class="text-[11px] font-medium uppercase tracking-[0.24em] text-gray-400">Personal Settings</p>
-          <h1 class="mt-3 text-5xl font-semibold tracking-tight text-gray-900">个人设置</h1>
+          <h1 class="mt-3 text-4xl font-semibold tracking-tight text-gray-900 sm:text-5xl">个人设置</h1>
           <p class="mt-4 max-w-3xl text-base leading-7 text-gray-500">
             在这里配置你自己的 API key、默认语义模式、默认配图模型和调用模型。保存后，工作台会自动带上这些配置。
           </p>
         </section>
 
-        <section class="grid grid-cols-12 gap-8">
-          <div class="col-span-12 lg:col-span-7 rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+        <section class="grid grid-cols-12 gap-6 xl:gap-8">
+          <div class="col-span-12 rounded-2xl border border-white/50 bg-white/60 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl sm:p-8 lg:col-span-7">
             <h2 class="text-2xl font-semibold tracking-tight text-gray-900">模型与 Key</h2>
             <div class="mt-8 space-y-5">
               <label class="block space-y-2">
@@ -64,7 +64,7 @@ const { settings, resetSettings } = useUserSettings();
             </div>
           </div>
 
-          <div class="relative z-10 col-span-12 overflow-visible lg:col-span-5 rounded-2xl border border-white/50 bg-white/60 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+          <div class="relative z-10 col-span-12 overflow-visible rounded-2xl border border-white/50 bg-white/60 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl sm:p-8 lg:col-span-5">
             <h2 class="text-2xl font-semibold tracking-tight text-gray-900">默认调用配置</h2>
             <div class="mt-8 space-y-5">
               <label class="relative block space-y-2">

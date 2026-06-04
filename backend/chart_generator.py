@@ -118,6 +118,8 @@ class ChartGenerationResult:
     y_columns: list[str]
     title: str
     theme: str
+    fallback: bool = False
+    warnings: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +129,8 @@ class ChartGenerationResult:
             "y_columns": self.y_columns,
             "title": self.title,
             "theme": self.theme,
+            "fallback": self.fallback,
+            "warnings": self.warnings or [],
         }
 
 
@@ -152,16 +156,17 @@ def _coerce_records(data: Any) -> list[dict[str, Any]]:
     else:
         raise ValueError("Unsupported data format for chart generation.")
 
-    if not records:
-        raise ValueError("Input data is empty. A chart cannot be generated from an empty dataset.")
     return records
 
 
 def _to_float(value: Any) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
 
 
 def _numeric_columns(records: list[dict[str, Any]]) -> list[str]:
@@ -202,6 +207,39 @@ def _extract_series(records: list[dict[str, Any]], x_column: str | None, y_colum
     return labels, series_values
 
 
+def _ensure_scatter_columns(records: list[dict[str, Any]], y_columns: list[str], warnings: list[str]) -> list[str]:
+    if len(y_columns) >= 2:
+        return y_columns[:2]
+    for index, record in enumerate(records):
+        record["_point_index"] = index + 1
+    warnings.append("Scatter chart received fewer than two numeric columns; added synthetic point index.")
+    if y_columns:
+        return ["_point_index", y_columns[0]]
+    return []
+
+
+def _ensure_heatmap_columns(records: list[dict[str, Any]], y_columns: list[str], warnings: list[str]) -> list[str]:
+    if len(y_columns) >= 2:
+        return y_columns
+    if y_columns:
+        derived_column = f"{y_columns[0]}_baseline"
+        for record in records:
+            record[derived_column] = _to_float(record.get(y_columns[0])) or 0.0
+        warnings.append("Heatmap received one numeric column; added a baseline column for stable rendering.")
+        return [y_columns[0], derived_column]
+    return []
+
+
+def _sanitize_pie_values(values: list[float], warnings: list[str]) -> list[float]:
+    sanitized = [max(0.0, value) for value in values]
+    if sanitized != values:
+        warnings.append("Pie chart converted negative values to zero.")
+    if not any(value > 0 for value in sanitized):
+        warnings.append("Pie chart received no positive values; using equal placeholder slices.")
+        return [1.0 for _ in sanitized] or [1.0]
+    return sanitized
+
+
 def _resolve_theme(theme: str | None) -> ChartTheme:
     normalized = (theme or DEFAULT_CHART_THEME).strip().lower()
     return CHART_THEMES.get(normalized, CHART_THEMES[DEFAULT_CHART_THEME])
@@ -222,6 +260,33 @@ def _new_canvas(title: str, theme: ChartTheme) -> tuple[Image.Image, ImageDraw.I
     draw.text((120, 70), title, fill=theme.title, font=title_font)
     draw.text((120, 92), theme.tagline, fill=theme.subtitle, font=body_font)
     return image, draw, title_font, body_font
+
+
+def _write_placeholder_chart(
+    output_path: Path,
+    chart_type: str,
+    title: str,
+    theme: ChartTheme,
+    message: str,
+    warnings: list[str],
+) -> ChartGenerationResult:
+    image, draw, title_font, body_font = _new_canvas(title, theme)
+    left, top, right, bottom = PLOT_BOUNDS
+    draw.rounded_rectangle((left, top, right, bottom), radius=24, fill=theme.background, outline=theme.frame, width=2)
+    draw.text((left + 40, top + 64), "Fallback Chart Preview", fill=theme.title, font=title_font)
+    draw.text((left + 40, top + 104), message, fill=theme.subtitle, font=body_font)
+    draw.text((left + 40, top + 148), "The pipeline can continue; replace with richer data for a full chart.", fill=theme.subtitle, font=body_font)
+    image.save(output_path)
+    return ChartGenerationResult(
+        chart_type=chart_type,
+        output_path=str(output_path),
+        x_column=None,
+        y_columns=[],
+        title=title,
+        theme=theme.key,
+        fallback=True,
+        warnings=warnings,
+    )
 
 
 def _draw_axes(draw: ImageDraw.ImageDraw, theme: ChartTheme) -> None:
@@ -419,20 +484,31 @@ def generate_chart(
 
     resolved_theme = _resolve_theme(theme)
     records = _coerce_records(data)
+    chart_title = title or f"{normalized_chart_type.title()} Chart"
+    chart_output = _prepare_output_path(output_path, normalized_chart_type)
+    warnings: list[str] = []
+    if not records:
+        warnings.append("Input data is empty; rendered placeholder chart.")
+        return _write_placeholder_chart(chart_output, normalized_chart_type, chart_title, resolved_theme, "No chartable data was provided.", warnings)
+
     numeric_columns = _numeric_columns(records)
     inferred_x_column = x_column or _infer_x_column(records, numeric_columns)
     inferred_y_columns = y_columns or _infer_y_columns(records, numeric_columns, inferred_x_column)
-    if normalized_chart_type in {"bar", "line", "pie", "area"} and inferred_x_column is None:
-        raise ValueError(f"{normalized_chart_type} chart requires at least one column for labels.")
-    if normalized_chart_type == "scatter" and len(inferred_y_columns) < 2:
-        raise ValueError("Scatter chart requires at least two numeric columns.")
-    if normalized_chart_type == "heatmap" and len(inferred_y_columns) < 2:
-        raise ValueError("Heatmap requires at least two numeric columns.")
-    if normalized_chart_type not in {"scatter", "heatmap"} and not inferred_y_columns:
-        raise ValueError("No numeric columns were found for chart generation.")
+    if normalized_chart_type == "scatter":
+        inferred_y_columns = _ensure_scatter_columns(records, inferred_y_columns, warnings)
+    elif normalized_chart_type == "heatmap":
+        inferred_y_columns = _ensure_heatmap_columns(records, inferred_y_columns, warnings)
 
-    chart_title = title or f"{normalized_chart_type.title()} Chart"
-    chart_output = _prepare_output_path(output_path, normalized_chart_type)
+    if normalized_chart_type in {"bar", "line", "pie", "area"} and inferred_x_column is None:
+        warnings.append(f"{normalized_chart_type} chart has no label column; rendered placeholder chart.")
+        return _write_placeholder_chart(chart_output, normalized_chart_type, chart_title, resolved_theme, "No label column was available.", warnings)
+    if normalized_chart_type not in {"scatter", "heatmap"} and not inferred_y_columns:
+        warnings.append("No numeric columns were found; rendered placeholder chart.")
+        return _write_placeholder_chart(chart_output, normalized_chart_type, chart_title, resolved_theme, "No numeric values were available.", warnings)
+    if normalized_chart_type in {"scatter", "heatmap"} and len(inferred_y_columns) < 2:
+        warnings.append(f"{normalized_chart_type} chart needs at least two numeric columns; rendered placeholder chart.")
+        return _write_placeholder_chart(chart_output, normalized_chart_type, chart_title, resolved_theme, "Not enough numeric values were available.", warnings)
+
     labels, series_values = _extract_series(records, inferred_x_column, inferred_y_columns)
 
     image, draw, _, body_font = _new_canvas(chart_title, resolved_theme)
@@ -441,7 +517,7 @@ def generate_chart(
     elif normalized_chart_type == "line":
         _plot_line(draw, labels, series_values, inferred_y_columns, body_font, resolved_theme)
     elif normalized_chart_type == "pie":
-        _plot_pie(draw, labels, series_values[0], body_font, resolved_theme)
+        _plot_pie(draw, labels, _sanitize_pie_values(series_values[0], warnings), body_font, resolved_theme)
     elif normalized_chart_type == "scatter":
         _plot_scatter(draw, series_values[0], series_values[1], body_font, resolved_theme)
     elif normalized_chart_type == "area":
@@ -461,4 +537,6 @@ def generate_chart(
         y_columns=inferred_y_columns,
         title=chart_title,
         theme=resolved_theme.key,
+        fallback=False,
+        warnings=warnings,
     )

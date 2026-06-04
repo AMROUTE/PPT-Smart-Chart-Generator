@@ -16,19 +16,19 @@ const navItems = [
 </script>
 
 <template>
-  <div class="flex h-screen w-full overflow-hidden bg-[#F9F9F9]">
-    <aside class="flex h-full w-64 flex-shrink-0 flex-col justify-between border-r border-gray-200 bg-white/50 p-4 backdrop-blur-xl">
-      <div class="space-y-8">
+  <div class="flex h-screen w-full flex-col overflow-hidden bg-[#F9F9F9] lg:flex-row">
+    <aside class="flex w-full flex-shrink-0 flex-col gap-4 border-b border-gray-200 bg-white/50 p-4 backdrop-blur-xl lg:h-full lg:w-64 lg:justify-between lg:border-b-0 lg:border-r">
+      <div class="space-y-4 lg:space-y-8">
         <div class="space-y-3 px-2 pt-2">
           <p class="text-[11px] font-medium uppercase tracking-[0.24em] text-gray-400">SmartChart Hub</p>
-          <h2 class="text-[30px] font-semibold tracking-tight text-gray-900">项目工作区</h2>
+          <h2 class="text-2xl font-semibold tracking-tight text-gray-900 lg:text-[30px]">项目工作区</h2>
         </div>
 
-        <nav class="space-y-2">
+        <nav class="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-visible lg:pb-0">
           <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" custom v-slot="{ navigate, isActive }">
             <button
               type="button"
-              class="w-full rounded-full px-4 py-3 text-left text-sm font-medium transition-all duration-300 ease-in-out"
+              class="whitespace-nowrap rounded-full px-4 py-3 text-center text-sm font-medium transition-all duration-300 ease-in-out lg:w-full lg:text-left"
               :class="
                 isActive
                   ? 'bg-gray-200/70 text-gray-900 shadow-sm'
@@ -42,7 +42,7 @@ const navItems = [
         </nav>
       </div>
 
-      <div class="space-y-4 rounded-2xl border border-white/50 bg-white/70 p-4 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+      <div class="flex items-center justify-between gap-3 rounded-2xl border border-white/50 bg-white/70 p-3 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl lg:block lg:space-y-4 lg:p-4">
         <div class="flex items-center gap-3">
           <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gray-100 text-gray-500">
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -60,7 +60,7 @@ const navItems = [
 
         <button
           type="button"
-          class="w-full rounded-full border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 transition-all duration-200 ease-in-out hover:-translate-y-0.5 hover:bg-gray-50 hover:shadow-sm active:scale-[0.98]"
+          class="shrink-0 rounded-full border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 transition-all duration-200 ease-in-out hover:-translate-y-0.5 hover:bg-gray-50 hover:shadow-sm active:scale-[0.98] lg:w-full"
           @click="emit('logout')"
         >
           退出登录
@@ -68,7 +68,7 @@ const navItems = [
       </div>
     </aside>
 
-    <section class="relative h-full flex-1 overflow-y-auto">
+    <section class="relative min-h-0 flex-1 overflow-y-auto">
       <RouterView />
     </section>
   </div>

@@ -97,6 +97,61 @@ const clipScoreValue = computed(() => {
   const score = illustrationMeta.value?.clip_score ?? intentInfo.value?.clip_score;
   return score == null ? "—" : String(score);
 });
+const illustrationQualityStatus = computed(() => {
+  const meta = illustrationMeta.value;
+  if (!meta) {
+    return "待生成";
+  }
+  if (meta.regenerated) {
+    return "已重生成";
+  }
+  if (meta.regenerate_hint) {
+    return "待复核";
+  }
+  return "通过";
+});
+const illustrationQualityBadgeClass = computed(() => {
+  const status = illustrationQualityStatus.value;
+  if (status === "已重生成") {
+    return "bg-amber-100 text-amber-700";
+  }
+  if (status === "待复核") {
+    return "bg-red-100 text-red-700";
+  }
+  if (status === "通过") {
+    return "bg-green-100 text-green-700";
+  }
+  return "bg-gray-100 text-gray-600";
+});
+const regenerateActionText = computed(() => {
+  const action = illustrationMeta.value?.regenerate_action;
+  const map = {
+    local_refined_prompt: "本地 refined prompt",
+    manual_review_recommended: "建议人工复核",
+    none: "无需重生成",
+  };
+  return map[action] ?? action ?? "等待评分";
+});
+const scoreDeltaText = computed(() => {
+  const meta = illustrationMeta.value;
+  if (!meta || meta.initial_clip_score == null || meta.clip_score == null) {
+    return "—";
+  }
+  const delta = Number(meta.clip_score) - Number(meta.initial_clip_score);
+  if (!Number.isFinite(delta)) {
+    return "—";
+  }
+  return delta > 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1);
+});
+const illustrationQualityCards = computed(() => {
+  const meta = illustrationMeta.value || {};
+  return [
+    { label: "初始分", value: meta.initial_clip_score == null ? "—" : String(meta.initial_clip_score) },
+    { label: "最终分", value: meta.clip_score == null ? "—" : String(meta.clip_score) },
+    { label: "阈值", value: meta.score_threshold == null ? "6.5" : String(meta.score_threshold) },
+    { label: "提升", value: scoreDeltaText.value },
+  ];
+});
 const chartOverrideText = computed(
   () => chartTypeOptions.find((item) => item.value === chartTypeOverride.value)?.label ?? chartTypeOverride.value,
 );
@@ -136,7 +191,7 @@ const currentPanelDescription = computed(() => {
 const summaryMetrics = computed(() => [
   { label: "模式", value: activeMode.value === "ppt" ? "PPT" : "文本演示" },
   { label: "页码", value: activeMode.value === "ppt" ? String(slideNumber.value) : "Demo" },
-  { label: "CLIP", value: clipScoreValue.value },
+  { label: "配图质量", value: illustrationQualityStatus.value },
   { label: "进度", value: `${progressValue.value}%` },
 ]);
 
@@ -436,12 +491,12 @@ watch(
 
 <template>
   <main class="w-full">
-    <div class="mx-auto w-full max-w-[1480px] p-8">
-      <section class="rounded-[28px] border border-white/50 bg-white/70 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+    <div class="mx-auto w-full max-w-[1480px] p-4 sm:p-6 xl:p-8">
+      <section class="rounded-[28px] border border-white/50 bg-white/70 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl sm:p-8">
         <div class="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div class="max-w-4xl">
             <p class="text-[11px] font-medium uppercase tracking-[0.24em] text-gray-400">SmartChart Studio</p>
-            <h1 class="mt-3 text-5xl font-semibold tracking-tight text-gray-900 xl:text-6xl">生成工作台</h1>
+            <h1 class="mt-3 text-4xl font-semibold tracking-tight text-gray-900 sm:text-5xl xl:text-6xl">生成工作台</h1>
             <p class="mt-4 max-w-3xl text-base leading-7 text-gray-500">
               上传您的演示文稿，AI 将自动进行语义解析，并在主工作区为您实时生成专业的图表与配图。
             </p>
@@ -778,7 +833,12 @@ watch(
                         <p class="text-xs uppercase tracking-[0.18em] text-white/50">Illustration</p>
                         <h3 class="mt-2 text-2xl font-semibold tracking-tight text-white">配图结果</h3>
                       </div>
-                      <span class="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/80">进入详情</span>
+                      <div class="flex flex-wrap justify-end gap-2">
+                        <span class="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/80">进入详情</span>
+                        <span class="rounded-full px-3 py-1 text-xs font-medium" :class="illustrationQualityBadgeClass">
+                          {{ illustrationQualityStatus }}
+                        </span>
+                      </div>
                     </div>
 
                     <div v-if="illustrationPreviewUrl" class="mt-6 flex flex-1 items-center justify-center overflow-hidden rounded-[24px] border border-white/10 bg-white/5 p-6">
@@ -794,6 +854,17 @@ watch(
                         <circle cx="8.25" cy="8.5" r="1.25" fill="currentColor" />
                       </svg>
                       等待生成配图...
+                    </div>
+
+                    <div v-if="illustrationMeta" class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div
+                        v-for="item in illustrationQualityCards"
+                        :key="item.label"
+                        class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
+                      >
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-white/40">{{ item.label }}</p>
+                        <p class="mt-2 text-sm font-semibold text-white">{{ item.value }}</p>
+                      </div>
                     </div>
                   </button>
 
@@ -893,6 +964,44 @@ watch(
                       <circle cx="8.25" cy="8.5" r="1.25" fill="currentColor" />
                     </svg>
                     等待生成配图...
+                  </div>
+
+                  <div v-if="illustrationMeta" class="mt-6 rounded-[24px] border border-white/10 bg-white/5 p-5">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p class="text-xs uppercase tracking-[0.18em] text-white/40">Quality Gate</p>
+                        <h4 class="mt-2 text-lg font-semibold tracking-tight text-white">配图质量与重生成</h4>
+                      </div>
+                      <span class="w-fit rounded-full px-3 py-1 text-xs font-medium" :class="illustrationQualityBadgeClass">
+                        {{ illustrationQualityStatus }}
+                      </span>
+                    </div>
+
+                    <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                      <div
+                        v-for="item in illustrationQualityCards"
+                        :key="item.label"
+                        class="rounded-2xl border border-white/10 bg-black/20 px-4 py-3"
+                      >
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-white/40">{{ item.label }}</p>
+                        <p class="mt-2 text-sm font-semibold text-white">{{ item.value }}</p>
+                      </div>
+                    </div>
+
+                    <div class="mt-5 grid gap-3 lg:grid-cols-2">
+                      <div class="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-white/40">重生成动作</p>
+                        <p class="mt-2 text-sm font-semibold text-white">{{ regenerateActionText }}</p>
+                      </div>
+                      <div class="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-white/40">重生成次数</p>
+                        <p class="mt-2 text-sm font-semibold text-white">{{ illustrationMeta.regenerate_attempts ?? 0 }}</p>
+                      </div>
+                    </div>
+
+                    <p v-if="illustrationMeta.regenerate_reason" class="mt-4 text-sm leading-6 text-white/65">
+                      {{ illustrationMeta.regenerate_reason }}
+                    </p>
                   </div>
                 </div>
               </div>

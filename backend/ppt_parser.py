@@ -24,6 +24,7 @@ class ParsedSlideContent:
     text_content: str
     tables: list[dict[str, Any]]
     shapes: list[dict[str, Any]]
+    diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -31,6 +32,7 @@ class ParsedSlideContent:
             "text_content": self.text_content,
             "tables": self.tables,
             "shapes": self.shapes,
+            "diagnostics": self.diagnostics or {},
         }
 
 
@@ -55,6 +57,10 @@ class SlideOutlineItem:
     table_count: int
     shape_count: int
     table_titles: list[str]
+    picture_count: int = 0
+    placeholder_count: int = 0
+    is_empty: bool = False
+    diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +69,10 @@ class SlideOutlineItem:
             "table_count": self.table_count,
             "shape_count": self.shape_count,
             "table_titles": self.table_titles,
+            "picture_count": self.picture_count,
+            "placeholder_count": self.placeholder_count,
+            "is_empty": self.is_empty,
+            "diagnostics": self.diagnostics or {},
         }
 
 
@@ -197,12 +207,22 @@ def extract_text_from_shape(shape: Any) -> str:
 
 def describe_shape(shape: Any, index: int) -> dict[str, Any]:
     shape_type = getattr(getattr(shape, "shape_type", None), "name", str(getattr(shape, "shape_type", "")))
+    is_placeholder = bool(getattr(shape, "is_placeholder", False))
+    placeholder_type = ""
+    if is_placeholder:
+        try:
+            placeholder_type = getattr(shape.placeholder_format.type, "name", str(shape.placeholder_format.type))
+        except (AttributeError, ValueError):
+            placeholder_type = ""
     payload = {
         "index": index,
         "name": getattr(shape, "name", f"shape_{index}"),
         "shape_type": shape_type,
         "has_text": bool(getattr(shape, "has_text_frame", False)),
         "has_table": bool(getattr(shape, "has_table", False)),
+        "has_picture": shape_type.upper() == "PICTURE",
+        "is_placeholder": is_placeholder,
+        "placeholder_type": placeholder_type,
         "left": int(getattr(shape, "left", 0)),
         "top": int(getattr(shape, "top", 0)),
         "width": int(getattr(shape, "width", 0)),
@@ -211,6 +231,7 @@ def describe_shape(shape: Any, index: int) -> dict[str, Any]:
     text = extract_text_from_shape(shape)
     if text:
         payload["text"] = text
+        payload["text_preview"] = text[:160]
     return payload
 
 
@@ -264,6 +285,38 @@ def infer_table_from_text_blocks(text_blocks: list[str]) -> list[dict[str, Any]]
     return [{"title": "text_inferred_table", "columns": ["category", "value"], "rows": rows, "merge_hints": [], "raw_matrix": [["category", "value"], *rows], "cell_matrix": []}]
 
 
+def _reading_order_text_blocks(shapes: list[dict[str, Any]]) -> list[str]:
+    text_shapes = [shape for shape in shapes if shape.get("text")]
+    text_shapes.sort(key=lambda shape: (int(shape.get("top", 0)), int(shape.get("left", 0)), int(shape.get("index", 0))))
+    return [str(shape["text"]).strip() for shape in text_shapes if str(shape.get("text", "")).strip()]
+
+
+def _shape_diagnostics(shapes: list[dict[str, Any]], tables: list[dict[str, Any]], text_blocks: list[str], has_inferred_table: bool) -> dict[str, Any]:
+    picture_count = sum(1 for shape in shapes if shape.get("has_picture"))
+    placeholder_count = sum(1 for shape in shapes if shape.get("is_placeholder"))
+    non_empty_text_shape_count = len(text_blocks)
+    text_shape_count = sum(1 for shape in shapes if shape.get("has_text"))
+    empty_shape_count = sum(
+        1
+        for shape in shapes
+        if not shape.get("text")
+        and not shape.get("has_table")
+        and not shape.get("has_picture")
+    )
+    return {
+        "shape_count": len(shapes),
+        "text_shape_count": text_shape_count,
+        "non_empty_text_shape_count": non_empty_text_shape_count,
+        "table_count": len(tables),
+        "picture_count": picture_count,
+        "placeholder_count": placeholder_count,
+        "empty_shape_count": empty_shape_count,
+        "has_inferred_table": has_inferred_table,
+        "is_empty": non_empty_text_shape_count == 0 and len(tables) == 0 and picture_count == 0,
+        "text_order": [shape.get("index") for shape in sorted([shape for shape in shapes if shape.get("text")], key=lambda shape: (int(shape.get("top", 0)), int(shape.get("left", 0)), int(shape.get("index", 0))))],
+    }
+
+
 def _ensure_presentation_dependency() -> None:
     if Presentation is None:
         raise ModuleNotFoundError("python-pptx is required for PPT parsing.")
@@ -283,12 +336,15 @@ def _validate_slide_number(presentation: Any, slide_number: int) -> None:
 
 
 def _build_parsed_slide(slide: Any, slide_number: int) -> ParsedSlideContent:
-    tables = extract_tables(slide)
     shapes = extract_shapes(slide)
-    text_blocks = [shape["text"] for shape in shapes if shape.get("text")]
+    text_blocks = _reading_order_text_blocks(shapes)
+    tables = extract_tables(slide)
+    has_inferred_table = False
     if not tables:
         tables = infer_table_from_text_blocks(text_blocks)
-    return ParsedSlideContent(slide_number=slide_number, text_content="\n".join(text_blocks), tables=tables, shapes=shapes)
+        has_inferred_table = bool(tables)
+    diagnostics = _shape_diagnostics(shapes, tables, text_blocks, has_inferred_table)
+    return ParsedSlideContent(slide_number=slide_number, text_content="\n".join(text_blocks), tables=tables, shapes=shapes, diagnostics=diagnostics)
 
 
 def extract_slide_content_from_presentation(presentation: Any, slide_number: int) -> ParsedSlideContent:
@@ -383,6 +439,7 @@ def parse_presentation_outline(ppt_path: str | Path) -> list[SlideOutlineItem]:
     items: list[SlideOutlineItem] = []
     for slide_index in range(1, len(presentation.slides) + 1):
         parsed = extract_slide_content_from_presentation(presentation, slide_index)
+        diagnostics = parsed.diagnostics or {}
         items.append(
             SlideOutlineItem(
                 slide_number=slide_index,
@@ -390,6 +447,10 @@ def parse_presentation_outline(ppt_path: str | Path) -> list[SlideOutlineItem]:
                 table_count=len(parsed.tables),
                 shape_count=len(parsed.shapes),
                 table_titles=[table.get("title", f"table_{table_index + 1}") for table_index, table in enumerate(parsed.tables)],
+                picture_count=int(diagnostics.get("picture_count", 0)),
+                placeholder_count=int(diagnostics.get("placeholder_count", 0)),
+                is_empty=bool(diagnostics.get("is_empty", False)),
+                diagnostics=diagnostics,
             )
         )
     return items

@@ -25,6 +25,22 @@ def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def _json_dump(value: Any, fallback: Any) -> str:
+    try:
+        return json.dumps(value if value is not None else fallback, ensure_ascii=False)
+    except TypeError:
+        return json.dumps(fallback, ensure_ascii=False)
+
+
+def _json_load(value: str | None, fallback: Any) -> Any:
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
+
+
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(_db_path())
@@ -36,10 +52,9 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def init_db() -> None:
-    with get_connection() as connection:
-        connection.executescript(
-            """
+def _ensure_base_tables(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -85,8 +100,41 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 UNIQUE(upload_token, slide_number)
             );
-            """
-        )
+        """
+    )
+
+
+def _ensure_database_schema(connection: sqlite3.Connection) -> None:
+    _ensure_base_tables(connection)
+    _ensure_processing_job_columns(connection)
+
+
+def init_db() -> None:
+    with get_connection() as connection:
+        _ensure_database_schema(connection)
+
+
+def _ensure_processing_job_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(processing_jobs)").fetchall()
+    }
+    column_definitions = {
+        "chart_theme": "TEXT",
+        "chart_type": "TEXT",
+        "chart_image_path": "TEXT",
+        "illustration_image_path": "TEXT",
+        "progress": "INTEGER NOT NULL DEFAULT 0",
+        "intent_json": "TEXT NOT NULL DEFAULT '{}'",
+        "chart_spec_json": "TEXT NOT NULL DEFAULT '{}'",
+        "illustration_meta_json": "TEXT NOT NULL DEFAULT '{}'",
+        "layout_json": "TEXT NOT NULL DEFAULT '{}'",
+        "logs_json": "TEXT NOT NULL DEFAULT '[]'",
+        "stage_history_json": "TEXT NOT NULL DEFAULT '[]'",
+    }
+    for column_name, definition in column_definitions.items():
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE processing_jobs ADD COLUMN {column_name} {definition}")
 
 
 def database_health() -> dict[str, Any]:
@@ -119,6 +167,7 @@ def authenticate_or_create_user(username: str, password: str) -> dict[str, Any]:
     password_hash = _hash_password(password)
     now = _utc_now()
     with get_connection() as connection:
+        _ensure_base_tables(connection)
         existing = connection.execute(
             "SELECT id, username, password_hash, display_name FROM users WHERE username = ?",
             (normalized_username,),
@@ -152,6 +201,7 @@ def authenticate_or_create_user(username: str, password: str) -> dict[str, Any]:
 
 def record_upload_session(upload_token: str, original_filename: str, stored_path: str | Path, size_bytes: int) -> None:
     with get_connection() as connection:
+        _ensure_base_tables(connection)
         connection.execute(
             """
             INSERT OR REPLACE INTO upload_sessions (upload_token, original_filename, stored_path, size_bytes, created_at)
@@ -163,6 +213,7 @@ def record_upload_session(upload_token: str, original_filename: str, stored_path
 
 def fetch_upload_session(upload_token: str) -> dict[str, Any] | None:
     with get_connection() as connection:
+        _ensure_base_tables(connection)
         row = connection.execute(
             "SELECT upload_token, original_filename, stored_path, size_bytes, created_at FROM upload_sessions WHERE upload_token = ?",
             (upload_token,),
@@ -181,15 +232,26 @@ def record_processing_job(
     image_model: str,
     status: str,
     final_pptx_path: str = "",
+    chart_theme: str = "",
+    result_payload: dict[str, Any] | None = None,
 ) -> None:
     timestamp = _utc_now()
+    result = result_payload or {}
+    intent = result.get("intent", {}) if isinstance(result.get("intent", {}), dict) else {}
+    chart_spec = result.get("chart_spec", {}) if isinstance(result.get("chart_spec", {}), dict) else {}
+    illustration_meta = result.get("illustration_meta", {}) if isinstance(result.get("illustration_meta", {}), dict) else {}
+    layout = intent.get("layout", {}) if isinstance(intent.get("layout", {}), dict) else {}
+    progress = int(result.get("progress") or 0)
     with get_connection() as connection:
+        _ensure_database_schema(connection)
         connection.execute(
             """
             INSERT OR REPLACE INTO processing_jobs (
                 request_id, upload_token, source_type, slide_number, semantic_mode, chart_type_override,
-                illustration_style, image_model, status, final_pptx_path, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                illustration_style, image_model, status, final_pptx_path, created_at, updated_at,
+                chart_theme, chart_type, chart_image_path, illustration_image_path, progress,
+                intent_json, chart_spec_json, illustration_meta_json, layout_json, logs_json, stage_history_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request_id,
@@ -204,6 +266,17 @@ def record_processing_job(
                 final_pptx_path,
                 timestamp,
                 timestamp,
+                chart_theme,
+                intent.get("chart_type", ""),
+                result.get("chart_image", ""),
+                result.get("illustration_image", ""),
+                progress,
+                _json_dump(intent, {}),
+                _json_dump(chart_spec, {}),
+                _json_dump(illustration_meta, {}),
+                _json_dump(layout, {}),
+                _json_dump(result.get("logs", []), []),
+                _json_dump(result.get("stage_history", []), []),
             ),
         )
 
@@ -211,6 +284,7 @@ def record_processing_job(
 def record_slide_outline(upload_token: str, slides: list[dict[str, Any]]) -> None:
     timestamp = _utc_now()
     with get_connection() as connection:
+        _ensure_base_tables(connection)
         for slide in slides:
             connection.execute(
                 """
@@ -232,10 +306,12 @@ def record_slide_outline(upload_token: str, slides: list[dict[str, Any]]) -> Non
 
 def list_recent_jobs(limit: int = 30) -> list[dict[str, Any]]:
     with get_connection() as connection:
+        _ensure_database_schema(connection)
         rows = connection.execute(
             """
             SELECT request_id, upload_token, source_type, slide_number, semantic_mode, chart_type_override,
-                   illustration_style, image_model, status, final_pptx_path, created_at, updated_at
+                   illustration_style, image_model, status, final_pptx_path, created_at, updated_at,
+                   chart_theme, chart_type, progress
             FROM processing_jobs
             ORDER BY updated_at DESC, id DESC
             LIMIT ?
@@ -243,3 +319,29 @@ def list_recent_jobs(limit: int = 30) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def fetch_processing_job(request_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        _ensure_database_schema(connection)
+        row = connection.execute(
+            """
+            SELECT request_id, upload_token, source_type, slide_number, semantic_mode, chart_type_override,
+                   illustration_style, image_model, status, final_pptx_path, created_at, updated_at,
+                   chart_theme, chart_type, chart_image_path, illustration_image_path, progress,
+                   intent_json, chart_spec_json, illustration_meta_json, layout_json, logs_json, stage_history_json
+            FROM processing_jobs
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["intent"] = _json_load(payload.pop("intent_json", ""), {})
+    payload["chart_spec"] = _json_load(payload.pop("chart_spec_json", ""), {})
+    payload["illustration_meta"] = _json_load(payload.pop("illustration_meta_json", ""), {})
+    payload["layout"] = _json_load(payload.pop("layout_json", ""), {})
+    payload["logs"] = _json_load(payload.pop("logs_json", ""), [])
+    payload["stage_history"] = _json_load(payload.pop("stage_history_json", ""), [])
+    return payload

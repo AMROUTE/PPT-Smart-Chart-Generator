@@ -44,7 +44,7 @@ async function submitLogin() {
           <input
             v-model="username"
             type="text"
-            placeholder="例如：amanzhuole"
+            placeholder=""
             class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
             @keyup.enter="submitLogin"
           />
@@ -55,7 +55,7 @@ async function submitLogin() {
           <input
             v-model="password"
             type="password"
-            placeholder="输入任意测试密码"
+            placeholder=""
             class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
             @keyup.enter="submitLogin"
           />

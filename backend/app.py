@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_settings
-from backend.database import authenticate_or_create_user, init_db, list_recent_jobs
+from backend.database import authenticate_or_create_user, fetch_processing_job, init_db, list_recent_jobs
 from backend.services import (
     allowed_file,
     build_health_payload,
@@ -20,6 +20,7 @@ from backend.services import (
     process_demo_text,
     process_local_ppt,
     process_local_ppt_batch,
+    path_to_asset_url,
     save_upload,
 )
 
@@ -250,6 +251,16 @@ def create_app() -> FastAPI:
     @app.get("/api/jobs")
     def jobs(limit: int = 30) -> JSONResponse:
         return JSONResponse({"jobs": list_recent_jobs(limit=limit)})
+
+    @app.get("/api/jobs/{request_id}")
+    def job_detail(request_id: str) -> JSONResponse:
+        job = fetch_processing_job(request_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Processing job not found.")
+        job["chart_image_url"] = path_to_asset_url(job.get("chart_image_path", ""))
+        job["illustration_image_url"] = path_to_asset_url(job.get("illustration_image_path", ""))
+        job["final_pptx_url"] = path_to_asset_url(job.get("final_pptx_path", ""))
+        return JSONResponse({"job": job})
 
     return app
 
