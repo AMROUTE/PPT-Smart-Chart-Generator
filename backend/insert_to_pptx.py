@@ -54,6 +54,14 @@ def _is_raster_image(path: str | Path) -> bool:
     return Path(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
 
 
+def _shape_bounds(shape: dict[str, Any]) -> tuple[int, int, int, int]:
+    left = int(shape.get("left", 0))
+    top = int(shape.get("top", 0))
+    width = int(shape.get("width", 0))
+    height = int(shape.get("height", 0))
+    return left, top, width, height
+
+
 def _best_anchor(shapes: list[dict[str, Any]]) -> dict[str, int]:
     table_shapes = [shape for shape in shapes if shape.get("has_table")]
     if table_shapes:
@@ -66,6 +74,45 @@ def _best_anchor(shapes: list[dict[str, Any]]) -> dict[str, int]:
             "height": int(largest.get("height", 0)),
         }
     return {"index": 0, "left": int(Inches(0.8)), "top": int(Inches(1.5)), "width": int(Inches(8.0)), "height": int(Inches(4.5))}
+
+
+def _horizontal_overlap(first: dict[str, Any], second: dict[str, Any]) -> int:
+    first_left, _, first_width, _ = _shape_bounds(first)
+    second_left, _, second_width, _ = _shape_bounds(second)
+    first_right = first_left + first_width
+    second_right = second_left + second_width
+    return max(0, min(first_right, second_right) - max(first_left, second_left))
+
+
+def _find_adjacent_text_shape(shapes: list[dict[str, Any]], anchor: dict[str, int], direction: str) -> dict[str, Any] | None:
+    anchor_box = {
+        "left": anchor.get("left", 0),
+        "top": anchor.get("top", 0),
+        "width": anchor.get("width", 0),
+        "height": anchor.get("height", 0),
+    }
+    _, anchor_top, anchor_width, anchor_height = _shape_bounds(anchor_box)
+    anchor_bottom = anchor_top + anchor_height
+    min_overlap = max(int(anchor_width * 0.35), int(Inches(1.6)))
+    max_gap = int(Inches(1.0))
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+
+    for shape in shapes:
+        if not shape.get("has_text") or shape.get("has_table"):
+            continue
+        overlap = _horizontal_overlap(shape, anchor_box)
+        if overlap < min_overlap:
+            continue
+        _, top, _, height = _shape_bounds(shape)
+        bottom = top + height
+        gap = anchor_top - bottom if direction == "above" else top - anchor_bottom
+        if gap < 0 or gap > max_gap:
+            continue
+        candidates.append((gap, -overlap, shape))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
 
 
 def _remove_shape(shape: Any) -> None:
@@ -95,6 +142,14 @@ def _replace_table_shape(slide: Any, anchor_index: int) -> bool:
         return False
     _remove_shape(candidate)
     return True
+
+
+def _remove_shape_indexes(slide: Any, shape_indexes: list[int]) -> None:
+    for shape_index in sorted({index for index in shape_indexes if index > 0}, reverse=True):
+        shapes = list(slide.shapes)
+        if shape_index > len(shapes):
+            continue
+        _remove_shape(shapes[shape_index - 1])
 
 
 def _replace_table_region(slide: Any) -> tuple[int, int, int, int] | None:
@@ -266,9 +321,7 @@ def _choose_asset_regions(
 ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
     slide_area = max(1, slide_width * slide_height)
     if chart_region is not None:
-        chart_candidates = [
-            chart_region,
-        ]
+        chart_candidates = [chart_region]
         illustration_candidates = _illustration_region_candidates(slide_width, slide_height)
     else:
         layouts = _candidate_layouts(slide_width, slide_height)
@@ -329,45 +382,34 @@ def _layout_metadata(
     }
 
 
-def _add_asset_result_content(
-    slide: Any,
-    slide_width: int,
+def _compute_chart_region(
+    base_region: tuple[int, int, int, int],
     slide_height: int,
-    chart_region: tuple[int, int, int, int],
-    illustration_region: tuple[int, int, int, int],
-    chart_path: str | Path | None,
-    illustration_path: str | Path | None,
-    title: str,
-    summary: str,
-    intent: dict[str, Any],
-) -> None:
-    chart_type = intent.get("chart_type", "bar")
-    model = intent.get("image_model", "local")
-    style = intent.get("illustration_style", "auto")
-    score = intent.get("clip_score")
+    title_region: tuple[int, int, int, int] | None = None,
+    legend_region: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int, int]:
+    left, top, width, height = base_region
+    bottom = top + height
+    padding = int(Inches(0.12))
+    min_height = int(Inches(1.8))
 
-    _add_textbox(slide, int(slide_width * 0.08), int(slide_height * 0.08), int(slide_width * 0.76), int(slide_height * 0.07), title, 24, bold=True)
-    _add_caption_box(slide, int(slide_width * 0.08), int(slide_height * 0.15), int(slide_width * 0.76), int(slide_height * 0.05), summary)
+    if title_region is not None:
+        title_bottom = title_region[1] + title_region[3]
+        top = max(top, title_bottom + padding)
+    if legend_region is not None:
+        bottom = min(bottom, legend_region[1] - padding)
 
-    if chart_path and _is_raster_image(chart_path) and Path(chart_path).exists():
-        slide.shapes.add_picture(str(chart_path), Emu(chart_region[0]), Emu(chart_region[1]), width=Emu(chart_region[2]), height=Emu(chart_region[3]))
-    else:
-        _add_caption_box(slide, chart_region[0], chart_region[1], chart_region[2], int(slide_height * 0.12), "Chart preview is not available as a raster image yet.")
+    if bottom - top < min_height:
+        bottom = min(slide_height - padding, top + max(min_height, height))
 
-    legend_text = f"Chart type: {chart_type} | Source: {intent.get('source', 'local')} | Mode: {intent.get('semantic_mode', 'local')}"
-    _add_caption_box(slide, chart_region[0], chart_region[1] + chart_region[3] + int(slide_height * 0.02), chart_region[2], int(slide_height * 0.08), legend_text)
-
-    if illustration_path and _is_raster_image(illustration_path) and Path(illustration_path).exists():
-        slide.shapes.add_picture(str(illustration_path), Emu(illustration_region[0]), Emu(illustration_region[1]), width=Emu(illustration_region[2]), height=Emu(illustration_region[3]))
-    else:
-        _add_textbox(slide, illustration_region[0], illustration_region[1], illustration_region[2], int(slide_height * 0.08), "Illustration Area", 20, bold=True, color=(52, 82, 126))
-        _add_caption_box(slide, illustration_region[0], illustration_region[1] + int(slide_height * 0.08), illustration_region[2], int(slide_height * 0.18), f"Style: {style} | Model: {model}\nMatch score: {score if score is not None else 'N/A'}\nTheme: {intent.get('visual_theme', 'Generated illustration preview')}")
+    return left, top, width, max(min_height, bottom - top)
 
 
 def _add_textbox(slide: Any, left: int, top: int, width: int, height: int, text: str, font_size: int, bold: bool = False, color: tuple[int, int, int] = (32, 52, 82)) -> None:
     box = slide.shapes.add_textbox(Emu(left), Emu(top), Emu(width), Emu(height))
     frame = box.text_frame
     frame.clear()
+    frame.word_wrap = True
     paragraph = frame.paragraphs[0]
     paragraph.alignment = PP_ALIGN.LEFT
     run = paragraph.add_run()
@@ -377,8 +419,10 @@ def _add_textbox(slide: Any, left: int, top: int, width: int, height: int, text:
     run.font.color.rgb = RGBColor(*color)
 
 
-def _add_title(slide: Any, title: str) -> None:
-    _add_textbox(slide, int(Inches(0.6)), int(Inches(0.25)), int(Inches(8.0)), int(Inches(0.55)), title, 22, bold=True, color=(35, 35, 35))
+def _add_title(slide: Any, title: str, region: tuple[int, int, int, int] | None = None) -> None:
+    if region is None:
+        region = (int(Inches(0.6)), int(Inches(0.25)), int(Inches(8.0)), int(Inches(0.55)))
+    _add_textbox(slide, region[0], region[1], region[2], region[3], title, 22, bold=True, color=(35, 35, 35))
 
 
 def _add_caption_box(slide: Any, left: int, top: int, width: int, height: int, text: str) -> None:
@@ -393,12 +437,85 @@ def _add_caption_box(slide: Any, left: int, top: int, width: int, height: int, t
     run.font.color.rgb = RGBColor(88, 104, 127)
 
 
-def _add_legend(slide: Any, chart_spec: dict[str, Any], chart_top: int, chart_height: int) -> None:
+def _add_title_block(slide: Any, title: str, subtitle: str, region: tuple[int, int, int, int] | None, slide_width: int, slide_height: int) -> None:
+    if region is None:
+        title_height = int(slide_height * 0.07)
+        subtitle_height = int(slide_height * 0.05)
+        title_region = (int(slide_width * 0.08), int(slide_height * 0.08), int(slide_width * 0.76), title_height)
+        _add_title(slide, title, title_region)
+        if subtitle:
+            subtitle_region = (int(slide_width * 0.08), int(slide_height * 0.15), int(slide_width * 0.76), subtitle_height)
+            _add_caption_box(slide, *subtitle_region, subtitle)
+        return
+
+    left, top, width, height = region
+    box = slide.shapes.add_textbox(Emu(left), Emu(top), Emu(width), Emu(height))
+    frame = box.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.LEFT
+    run = paragraph.add_run()
+    run.text = title
+    run.font.size = Pt(20)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(35, 35, 35)
+    if subtitle:
+        subtitle_paragraph = frame.add_paragraph()
+        subtitle_paragraph.alignment = PP_ALIGN.LEFT
+        subtitle_run = subtitle_paragraph.add_run()
+        subtitle_run.text = subtitle
+        subtitle_run.font.size = Pt(12)
+        subtitle_run.font.color.rgb = RGBColor(88, 104, 127)
+
+
+def _add_legend(slide: Any, chart_spec: dict[str, Any], chart_top: int, chart_height: int, region: tuple[int, int, int, int] | None = None) -> None:
     y_columns = chart_spec.get("y_columns") or []
     if not y_columns:
         return
-    legend_top = chart_top + chart_height + int(Inches(0.2))
-    _add_caption_box(slide, int(Inches(0.6)), legend_top, int(Inches(8.2)), int(Inches(0.8)), f"Legend: {', '.join(y_columns)}")
+    if region is None:
+        legend_top = chart_top + chart_height + int(Inches(0.2))
+        region = (int(Inches(0.6)), legend_top, int(Inches(8.2)), int(Inches(0.8)))
+    _add_caption_box(slide, region[0], region[1], region[2], region[3], f"Legend: {', '.join(y_columns)}")
+
+
+def _add_asset_result_content(
+    slide: Any,
+    slide_width: int,
+    slide_height: int,
+    chart_region: tuple[int, int, int, int],
+    illustration_region: tuple[int, int, int, int],
+    chart_path: str | Path | None,
+    illustration_path: str | Path | None,
+    title: str,
+    summary: str,
+    intent: dict[str, Any],
+    title_region: tuple[int, int, int, int] | None = None,
+    legend_region: tuple[int, int, int, int] | None = None,
+) -> None:
+    chart_type = intent.get("chart_type", "bar")
+    model = intent.get("image_model", "local")
+    style = intent.get("illustration_style", "auto")
+    score = intent.get("clip_score")
+
+    _add_title_block(slide, title, summary, title_region, slide_width, slide_height)
+
+    if chart_path and _is_raster_image(chart_path) and Path(chart_path).exists():
+        slide.shapes.add_picture(str(chart_path), Emu(chart_region[0]), Emu(chart_region[1]), width=Emu(chart_region[2]), height=Emu(chart_region[3]))
+    else:
+        _add_caption_box(slide, chart_region[0], chart_region[1], chart_region[2], int(slide_height * 0.12), "Chart preview is not available as a raster image yet.")
+
+    legend_text = f"Chart type: {chart_type} | Source: {intent.get('source', 'local')} | Mode: {intent.get('semantic_mode', 'local')}"
+    if legend_region is not None:
+        _add_caption_box(slide, legend_region[0], legend_region[1], legend_region[2], legend_region[3], legend_text)
+    else:
+        _add_caption_box(slide, chart_region[0], chart_region[1] + chart_region[3] + int(slide_height * 0.02), chart_region[2], int(slide_height * 0.08), legend_text)
+
+    if illustration_path and _is_raster_image(illustration_path) and Path(illustration_path).exists():
+        slide.shapes.add_picture(str(illustration_path), Emu(illustration_region[0]), Emu(illustration_region[1]), width=Emu(illustration_region[2]), height=Emu(illustration_region[3]))
+    else:
+        _add_textbox(slide, illustration_region[0], illustration_region[1], illustration_region[2], int(slide_height * 0.08), "Illustration Area", 20, bold=True, color=(52, 82, 126))
+        _add_caption_box(slide, illustration_region[0], illustration_region[1] + int(slide_height * 0.08), illustration_region[2], int(slide_height * 0.18), f"Style: {style} | Model: {model}\nMatch score: {score if score is not None else 'N/A'}\nTheme: {intent.get('visual_theme', 'Generated illustration preview')}")
 
 
 def insert_chart_to_pptx(ppt_path: str | Path, chart_image_path: str | Path, slide_number: int, chart_title: str, chart_spec: dict[str, Any] | None = None, shapes: list[dict[str, Any]] | None = None, output_path: str | Path | None = None) -> InsertResult:
@@ -415,16 +532,27 @@ def insert_chart_to_pptx(ppt_path: str | Path, chart_image_path: str | Path, sli
         raise ValueError(f"Slide number {slide_number} is out of range. This PPT has {len(presentation.slides)} slides.")
 
     slide = presentation.slides[slide_number - 1]
+    slide_height = int(presentation.slide_height)
     anchor = _best_anchor(shapes or [])
-    replaced_table = _replace_table_shape(slide, anchor["index"])
-    chart_left = anchor["left"]
-    chart_top = max(anchor["top"], int(Inches(1.1)))
-    chart_width = min(anchor["width"] or int(Inches(8.0)), int(Inches(8.6)))
-    chart_height = min(anchor["height"] or int(Inches(4.5)), int(Inches(4.8)))
+    title_shape = _find_adjacent_text_shape(shapes or [], anchor, "above")
+    legend_shape = _find_adjacent_text_shape(shapes or [], anchor, "below")
+    removal_indexes = [anchor["index"]] + [shape["index"] for shape in [title_shape, legend_shape] if shape]
+    replaced_table = anchor["index"] > 0
+    _remove_shape_indexes(slide, removal_indexes)
 
-    _add_title(slide, chart_title)
+    base_region = (
+        anchor["left"],
+        max(anchor["top"], int(Inches(1.1))),
+        min(anchor["width"] or int(Inches(8.0)), int(Inches(8.6))),
+        min(anchor["height"] or int(Inches(4.5)), int(Inches(4.8))),
+    )
+    title_region = _shape_bounds(title_shape) if title_shape else None
+    legend_region = _shape_bounds(legend_shape) if legend_shape else None
+    chart_left, chart_top, chart_width, chart_height = _compute_chart_region(base_region, slide_height, title_region, legend_region)
+
+    _add_title(slide, chart_title, title_region)
     slide.shapes.add_picture(str(image_path), chart_left, chart_top, width=chart_width, height=chart_height)
-    _add_legend(slide, chart_spec or {}, chart_top, chart_height)
+    _add_legend(slide, chart_spec or {}, chart_top, chart_height, legend_region)
 
     destination = _derive_output_path(source_path, output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -449,11 +577,25 @@ def insert_generated_assets(ppt_path: str | Path, output_path: str | Path, slide
     intent = intent or {}
 
     anchor = _best_anchor(shapes or [])
+    title_shape = _find_adjacent_text_shape(shapes or [], anchor, "above")
+    legend_shape = _find_adjacent_text_shape(shapes or [], anchor, "below")
+    title_region = _shape_bounds(title_shape) if title_shape else None
+    legend_region = _shape_bounds(legend_shape) if legend_shape else None
+
     if shapes and anchor["index"]:
-        chart_anchor = (anchor["left"], max(anchor["top"], int(Inches(1.1))), min(anchor["width"] or int(Inches(8.0)), int(Inches(8.6))), min(anchor["height"] or int(Inches(4.5)), int(Inches(4.8))))
+        base_region = (
+            anchor["left"],
+            max(anchor["top"], int(Inches(1.1))),
+            min(anchor["width"] or int(Inches(8.0)), int(Inches(8.6))),
+            min(anchor["height"] or int(Inches(4.5)), int(Inches(4.8))),
+        )
+        chart_anchor = _compute_chart_region(base_region, slide_height, title_region, legend_region)
     else:
         chart_anchor = _replace_table_region(slide)
+        if chart_anchor is None:
+            chart_anchor = _default_chart_region(slide_width, slide_height)
     chart_region, illu_region = _choose_asset_regions(slide_width, slide_height, shapes or [], chart_anchor, anchor["index"] if anchor["index"] else None)
+
     summary = subtitle or "Auto-generated chart and illustration preview"
     layout = _layout_metadata(chart_region, illu_region, shapes or [], slide_width, slide_height, anchor["index"] if anchor["index"] else None)
     if layout["layout_warning"]:
@@ -493,7 +635,8 @@ def insert_generated_assets(ppt_path: str | Path, output_path: str | Path, slide
             intent,
         )
     else:
-        _replace_table_shape(slide, anchor["index"])
+        removal_indexes = [anchor["index"]] + [shape["index"] for shape in [title_shape, legend_shape] if shape]
+        _remove_shape_indexes(slide, removal_indexes)
         _add_asset_result_content(
             slide,
             slide_width,
@@ -505,6 +648,8 @@ def insert_generated_assets(ppt_path: str | Path, output_path: str | Path, slide
             title or f"Slide {slide_number} chart result",
             summary,
             intent,
+            title_region=title_region,
+            legend_region=legend_region,
         )
 
     intent["layout"] = layout

@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import re
 import shutil
+import tempfile
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 from backend.config import get_settings
 from backend.schemas import AgentState, PipelineInput
+from backend.services import ensure_output_dir
 
 try:
     from langgraph.graph import END, StateGraph
@@ -277,13 +279,19 @@ def _estimate_clip_score(text_content: str, visual_theme: str, keywords: list[st
 
 
 @lru_cache(maxsize=1)
+
 def _get_logger() -> logging.Logger:
     settings = get_settings()
     log_dir = Path(settings.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("ppt_pipeline")
     if not logger.handlers:
-        handler = logging.FileHandler(log_dir / "pipeline.log", encoding="utf-8")
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(log_dir / "pipeline.log", encoding="utf-8")
+        except OSError:
+            fallback_dir = Path(tempfile.gettempdir()) / "ppt-smart-chart-logs"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(fallback_dir / "pipeline.log", encoding="utf-8")
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
@@ -329,8 +337,8 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
     chart_override = _normalize_chart_override(state.get("chart_type_override"))
     chart_theme = _normalize_chart_theme(state.get("chart_theme"))
     illustration_style = _normalize_illustration_style(state.get("illustration_style"))
-    image_model = _normalize_image_model(state.get("image_model"))
-    text_content = (state.get("text_content") or "").lower()
+    requested_image_model = str(state.get("image_model", "local") or "local").strip().lower()
+    image_model = _normalize_image_model(requested_image_model)
     table = (state.get("extracted_tables") or [{}])[0]
     columns = table.get("columns", [])
     rows = table.get("rows", [])
@@ -397,7 +405,7 @@ def semantic_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def generate_chart_node(state: dict[str, Any]) -> dict[str, Any]:
     chart_type = state["intent"].get("chart_type", "bar")
-    output_path = Path(get_settings().output_dir) / f"{state.get('request_id', 'req')}_chart_slide_{state['current_slide']}.png"
+    output_path = ensure_output_dir() / f"{state.get('request_id', 'req')}_chart_slide_{state['current_slide']}.png"
     tables = state.get("extracted_tables", [])
     try:
         from backend.chart_generator import generate_chart
@@ -503,7 +511,7 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
     image_model = _normalize_image_model(requested_image_model)
     visual_theme = state["intent"].get("visual_theme", "intelligent illustration preview")
     state["illustration_prompt"] = _build_illustration_prompt(visual_theme=visual_theme, style_hint=style_hint, image_model=image_model, summary=str(state["intent"].get("summary", "")), keywords=list(state["intent"].get("keywords", [])), audience=str(state["intent"].get("audience", "business")))
-    output_path = Path(get_settings().output_dir) / f"{state.get('request_id', 'req')}_illustration_slide_{state['current_slide']}.png"
+    output_path = ensure_output_dir() / f"{state.get('request_id', 'req')}_illustration_slide_{state['current_slide']}.png"
     generation_source = "local"
     generation_warning = ""
     if image_model in {"wanx", "flux"}:
@@ -573,8 +581,7 @@ def generate_illustration_node(state: dict[str, Any]) -> dict[str, Any]:
 def save_pptx_node(state: dict[str, Any]) -> dict[str, Any]:
     from backend.insert_to_pptx import insert_generated_assets
     ppt_path = Path(state["ppt_path"])
-    output_dir = Path(get_settings().output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = ensure_output_dir()
     final_path = Path(state.get("output_ppt_path") or (output_dir / f"{ppt_path.stem}_enhanced{ppt_path.suffix}"))
     if ppt_path.exists():
         summary = state["intent"].get("reason") or "Auto-generated result"

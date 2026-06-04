@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -25,16 +26,31 @@ def ensure_upload_dir() -> Path:
     return upload_dir
 
 
+def _fallback_output_root() -> Path:
+    root = Path(tempfile.gettempdir()) / "ppt-smart-chart-outputs"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _ensure_writable_dir(preferred: Path, fallback_name: str) -> Path:
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        probe = preferred / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return preferred
+    except OSError:
+        fallback_dir = _fallback_output_root() / fallback_name
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
+
+
 def ensure_output_dir() -> Path:
-    output_dir = Path(get_settings().output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
+    return _ensure_writable_dir(Path(get_settings().output_dir), "outputs")
 
 
 def ensure_preview_dir() -> Path:
-    preview_dir = ensure_output_dir() / "previews"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    return preview_dir
+    return _ensure_writable_dir(ensure_output_dir() / "previews", "previews")
 
 
 def allowed_file(filename: str) -> bool:
@@ -64,11 +80,17 @@ def resolve_upload_token(upload_token: str) -> Path:
 
 
 def path_to_asset_url(file_path: str | Path) -> str:
-    normalized = Path(file_path).as_posix().lstrip("./")
+    path = Path(file_path)
+    normalized = path.as_posix().lstrip("./")
     if normalized.startswith("outputs/"):
         return f"/assets/{normalized}"
     if normalized.startswith("data/uploads/"):
         return f"/assets/{normalized}"
+    try:
+        if path.resolve().is_relative_to(_fallback_output_root().resolve()):
+            return f"/assets/outputs/{path.name}"
+    except OSError:
+        return ""
     return ""
 
 
@@ -570,7 +592,8 @@ def build_slide_preview(
     if not allowed_file(ppt_path.name):
         raise ValueError("Only .pptx files are supported.")
 
-    preview_path = ensure_preview_dir() / f"{ppt_path.stem}_slide_{slide_number}_preview.png"
+    preview_token = next_request_id("preview")
+    preview_path = ensure_preview_dir() / f"{ppt_path.stem}_slide_{slide_number}_{preview_token}.png"
     preview = render_slide_preview(ppt_path, slide_number, preview_path)
     return {
         "message": "Slide preview generated successfully.",
@@ -654,3 +677,4 @@ def build_health_payload() -> dict[str, Any]:
         ],
         **database_payload,
     }
+

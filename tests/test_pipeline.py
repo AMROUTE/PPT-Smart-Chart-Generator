@@ -663,6 +663,53 @@ class PptModuleTests(unittest.TestCase):
             output_ppt.unlink(missing_ok=True)
 
 
+    def test_insert_chart_to_pptx_reuses_adjacent_title_and_legend_regions(self):
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.35), Inches(5.6), Inches(0.7)).text_frame.text = "Old title placeholder"
+        table = slide.shapes.add_table(4, 3, Inches(0.5), Inches(1.5), Inches(5.5), Inches(2.0)).table
+        table.cell(0, 0).text = "month"
+        table.cell(0, 1).text = "sales"
+        table.cell(0, 2).text = "profit"
+        table.cell(1, 0).text = "Jan"
+        table.cell(1, 1).text = "120"
+        table.cell(1, 2).text = "20"
+        table.cell(2, 0).text = "Feb"
+        table.cell(2, 1).text = "150"
+        table.cell(2, 2).text = "35"
+        table.cell(3, 0).text = "Mar"
+        table.cell(3, 1).text = "180"
+        table.cell(3, 2).text = "40"
+        slide.shapes.add_textbox(Inches(0.5), Inches(3.7), Inches(5.5), Inches(0.55)).text_frame.text = "Old footer placeholder"
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            presentation.save(tmp.name)
+            ppt_path = Path(tmp.name)
+        output_chart = Path(tempfile.gettempdir()) / "insert_layout_chart.png"
+        output_ppt = Path(tempfile.gettempdir()) / "insert_layout_output.pptx"
+        try:
+            parsed = extract_slide_content(ppt_path, 1)
+            records = [dict(zip(parsed.tables[0]["columns"], row)) for row in parsed.tables[0]["rows"]]
+            chart = generate_chart(records, "bar", output_path=output_chart, title="Updated Revenue Overview")
+            result = insert_chart_to_pptx(
+                ppt_path=ppt_path,
+                chart_image_path=chart.output_path,
+                slide_number=1,
+                chart_title=chart.title,
+                chart_spec={"y_columns": ["sales", "profit"]},
+                shapes=parsed.shapes,
+                output_path=output_ppt,
+            )
+            enhanced = Presentation(result.output_path)
+            texts = [shape.text.strip() for shape in enhanced.slides[0].shapes if getattr(shape, "has_text_frame", False)]
+            self.assertIn("Updated Revenue Overview", texts)
+            self.assertTrue(any("Legend: sales, profit" in text for text in texts))
+            self.assertFalse(any("Old title placeholder" in text for text in texts))
+            self.assertFalse(any("Old footer placeholder" in text for text in texts))
+        finally:
+            ppt_path.unlink(missing_ok=True)
+            output_chart.unlink(missing_ok=True)
+            output_ppt.unlink(missing_ok=True)
+
 class ChartThemeTests(unittest.TestCase):
     def test_generate_chart_supports_all_milestone_two_chart_types(self):
         if Image is None:
@@ -850,3 +897,4 @@ class AppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
