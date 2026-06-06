@@ -41,6 +41,9 @@ const batchEnd = ref(1);
 const slidePreviewUrl = ref("");
 const slidePreviewLoading = ref(false);
 const slidePreviewError = ref("");
+const batchSlidePreviewCache = ref({});
+const batchSlidePreviewLoading = ref(false);
+const batchSlidePreviewError = ref("");
 const slideCount = ref(0);
 const uploadToken = ref("");
 const slideOutline = ref([]);
@@ -66,6 +69,7 @@ const progressTemplate = [
 
 let progressTimer = null;
 let previewRequestId = 0;
+let batchPreviewRequestId = 0;
 
 const fileInfo = computed(() => {
   if (!file.value) {
@@ -91,6 +95,13 @@ const defaultBatchLayout = {
 const batchSlides = computed(() => batchResult.value?.batch?.slides ?? []);
 const hasBatchSlides = computed(() => batchSlides.value.length > 0);
 const activeBatchSlide = computed(() => batchSlides.value[activeBatchIndex.value] ?? null);
+const activeBatchPreviewUrl = computed(() => {
+  const previewSlideNumber = activeBatchSlide.value?.slide_number;
+  if (!previewSlideNumber) {
+    return "";
+  }
+  return batchSlidePreviewCache.value[String(previewSlideNumber)]?.url ?? "";
+});
 const activeBatchPipeline = computed(() => activeBatchSlide.value?.pipeline ?? null);
 const pipelineResult = computed(() => activeBatchPipeline.value ?? response.value?.pipeline ?? null);
 const chartPreviewUrl = computed(() => pipelineResult.value?.chart_image_url ?? "");
@@ -281,6 +292,8 @@ async function submitForm() {
     const payload = await requestProcess(formData);
     response.value = payload;
     batchResult.value = null;
+    batchSlidePreviewCache.value = {};
+    batchSlidePreviewError.value = "";
     finalizeProgress(payload.pipeline);
     studioPanel.value = payload.pipeline?.illustration_image_url ? "illustration" : "chart";
   } catch (error) {
@@ -310,6 +323,8 @@ async function runDemo() {
     const payload = await requestDemo(formData);
     response.value = payload;
     batchResult.value = null;
+    batchSlidePreviewCache.value = {};
+    batchSlidePreviewError.value = "";
     finalizeProgress(payload.pipeline);
     studioPanel.value = payload.pipeline?.illustration_image_url ? "illustration" : "chart";
   } catch (error) {
@@ -325,6 +340,8 @@ function handleSelectedFile(selected) {
   uploadToken.value = "";
   slidePreviewUrl.value = "";
   slidePreviewError.value = "";
+  batchSlidePreviewCache.value = {};
+  batchSlidePreviewError.value = "";
   slideOutline.value = [];
   slideCount.value = 0;
   slideNumber.value = 1;
@@ -398,6 +415,54 @@ async function fetchSlideOutline() {
   }
 }
 
+async function fetchBatchSlidePreview(slide) {
+  if (activeMode.value !== "ppt" || !slide?.slide_number || !canPreview.value) {
+    return;
+  }
+
+  const key = String(slide.slide_number);
+  if (batchSlidePreviewCache.value[key]?.url) {
+    return;
+  }
+
+  const currentRequestId = ++batchPreviewRequestId;
+  batchSlidePreviewLoading.value = true;
+  batchSlidePreviewError.value = "";
+
+  const formData = new FormData();
+  formData.append("slide_number", key);
+  if (uploadToken.value) {
+    formData.append("upload_token", uploadToken.value);
+  } else if (file.value) {
+    formData.append("file", file.value);
+  }
+
+  try {
+    const payload = await requestSlidePreview(formData);
+    if (currentRequestId !== batchPreviewRequestId) {
+      return;
+    }
+    uploadToken.value = payload.upload_token || uploadToken.value;
+    slideCount.value = payload.slide_count || slideCount.value;
+    batchSlidePreviewCache.value = {
+      ...batchSlidePreviewCache.value,
+      [key]: {
+        url: payload.preview_image_url || "",
+        slideCount: payload.slide_count || 0,
+      },
+    };
+  } catch (error) {
+    if (currentRequestId !== batchPreviewRequestId) {
+      return;
+    }
+    batchSlidePreviewError.value = error.message;
+  } finally {
+    if (currentRequestId === batchPreviewRequestId) {
+      batchSlidePreviewLoading.value = false;
+    }
+  }
+}
+
 function startProgress() {
   stopProgress(false);
   progressValue.value = 6;
@@ -468,6 +533,8 @@ async function submitBatch() {
   errorMessage.value = "";
   response.value = null;
   batchResult.value = null;
+  batchSlidePreviewCache.value = {};
+  batchSlidePreviewError.value = "";
   startProgress();
 
   if (activeMode.value !== "ppt" || (!file.value && !uploadToken.value)) {
@@ -569,6 +636,7 @@ function selectBatchSlide(index, switchPanel = true) {
   activeBatchIndex.value = index;
   const slide = batchSlides.value[index];
   ensureBatchLayout(slide);
+  fetchBatchSlidePreview(slide);
   if (slide?.pipeline) {
     response.value = { pipeline: slide.pipeline };
     finalizeProgress(slide.pipeline);
@@ -991,23 +1059,36 @@ watch(
 
               <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
                 <div class="overflow-hidden rounded-[24px] border border-gray-100 bg-white p-4">
-                  <div class="relative aspect-video overflow-hidden rounded-[20px] bg-[linear-gradient(135deg,#f8fafc_0%,#eef2f7_100%)]">
+                  <div class="relative aspect-video overflow-hidden rounded-[20px] border border-gray-100 bg-white">
+                    <img
+                      v-if="activeBatchPreviewUrl"
+                      :src="activeBatchPreviewUrl"
+                      alt="original slide preview"
+                      class="absolute inset-0 h-full w-full object-cover"
+                    />
+                    <div
+                      v-else
+                      class="absolute inset-0 flex items-center justify-center bg-[linear-gradient(135deg,#f8fafc_0%,#eef2f7_100%)] text-sm text-gray-500"
+                    >
+                      {{ batchSlidePreviewLoading ? "原稿预览加载中..." : batchSlidePreviewError || "等待原稿预览..." }}
+                    </div>
+                    <div class="absolute inset-0 bg-white/10"></div>
                     <img
                       v-if="chartPreviewUrl"
                       :src="chartPreviewUrl"
                       alt="batch chart placement"
-                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg transition-all duration-200"
+                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg ring-1 ring-gray-900/5 transition-all duration-200"
                       :style="chartLayerStyle"
                     />
                     <img
                       v-if="illustrationPreviewUrl"
                       :src="illustrationPreviewUrl"
                       alt="batch illustration placement"
-                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg transition-all duration-200"
+                      class="absolute rounded-xl border border-white/80 bg-white object-contain p-2 shadow-lg ring-1 ring-gray-900/5 transition-all duration-200"
                       :style="illustrationLayerStyle"
                     />
                     <div
-                      v-if="!chartPreviewUrl && !illustrationPreviewUrl"
+                      v-if="!activeBatchPreviewUrl && !chartPreviewUrl && !illustrationPreviewUrl"
                       class="absolute inset-0 flex items-center justify-center text-sm text-gray-500"
                     >
                       当前页未生成可预览资源
