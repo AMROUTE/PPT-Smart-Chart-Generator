@@ -265,3 +265,4 @@ data/*.sqlite3-wal
 !/docs/quality-gallery/**
 /docs/agents/
 /docs/adr/
+.DS_Store

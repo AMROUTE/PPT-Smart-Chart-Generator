@@ -328,8 +328,30 @@ def process_local_ppt_batch(
     successful_results: list[dict[str, Any]] = []
     for slide_number in target_slides:
         request_id = f"{batch_id}-s{slide_number}"
+        parsed = preloaded[slide_number]
+        if _is_empty_parsed_slide(parsed):
+            record_processing_job(
+                request_id=request_id,
+                upload_token=ppt_path.name,
+                source_type="ppt-batch",
+                slide_number=slide_number,
+                semantic_mode=resolved_mode,
+                chart_type_override=resolved_chart_type,
+                illustration_style=resolved_style,
+                image_model=resolved_model,
+                status="skipped",
+                final_pptx_path="",
+                chart_theme=resolved_theme,
+                result_payload={
+                    "progress": 100,
+                    "logs": ["Empty slide skipped during batch processing."],
+                    "stage_history": [{"stage": "parse_ppt", "status": "skipped", "details": "Empty slide skipped."}],
+                    "intent": {"layout": {"insertion_mode": "skipped", "original_slide_preserved": True}},
+                },
+            )
+            slide_payloads.append(_build_skipped_slide(slide_number, request_id))
+            continue
         try:
-            parsed = preloaded[slide_number]
             result = run_pipeline(
                 {
                     "request_id": request_id,
@@ -385,15 +407,27 @@ def process_local_ppt_batch(
             slide_payloads.append(_build_failed_slide_payload(slide_number, request_id, exc))
 
     failure_count = sum(1 for item in slide_payloads if item["status"] == "failed")
-    success_count = len(slide_payloads) - failure_count
+    skipped_count = sum(1 for item in slide_payloads if item["status"] == "skipped")
+    success_count = sum(1 for item in slide_payloads if item["status"] not in {"failed", "skipped"})
     warning_count = sum(1 for item in slide_payloads if item.get("result_level") == "warning")
     pass_count = sum(1 for item in slide_payloads if item.get("result_level") == "pass")
+    if not batch_output_path.exists() and success_count + skipped_count > 0:
+        shutil.copyfile(ppt_path, batch_output_path)
+    has_final_pptx = batch_output_path.exists() and success_count + skipped_count > 0
+    message = "Batch pipeline completed successfully."
+    if failure_count:
+        message = "Batch pipeline completed with failures."
+    elif skipped_count:
+        message = "Batch pipeline completed with skipped slides."
+
+    processed_count = len(slide_payloads) - skipped_count
     return {
-        "message": "Batch pipeline completed successfully." if failure_count == 0 else "Batch pipeline completed with failures.",
+        "message": message,
         "file": build_file_metadata(ppt_path, target_slides[0]),
         "slide_numbers": target_slides,
         "slide_count": slide_count,
-        "processed_count": len(slide_payloads),
+        "processed_count": processed_count,
+        "skipped_count": skipped_count,
         "semantic_mode": resolved_mode,
         "chart_type_override": resolved_chart_type,
         "chart_theme": resolved_theme,
@@ -403,19 +437,21 @@ def process_local_ppt_batch(
             "pass_count": pass_count,
             "warning_count": warning_count,
             "failure_count": failure_count,
+            "skipped_count": skipped_count,
         },
-        "final_pptx_path": str(batch_output_path),
-        "final_pptx_url": path_to_asset_url(batch_output_path),
+        "final_pptx_path": str(batch_output_path) if has_final_pptx else "",
+        "final_pptx_url": path_to_asset_url(batch_output_path) if has_final_pptx else "",
         "batch": {
             "request_id": batch_id,
             "status": "completed" if failure_count == 0 else "partial",
             "total_slides": len(slide_payloads),
             "success_count": success_count,
             "failure_count": failure_count,
+            "skipped_count": skipped_count,
             "warning_count": warning_count,
             "pass_count": pass_count,
-            "final_pptx_path": str(batch_output_path) if success_count > 0 else "",
-            "final_pptx_url": path_to_asset_url(batch_output_path) if success_count > 0 else "",
+            "final_pptx_path": str(batch_output_path) if has_final_pptx else "",
+            "final_pptx_url": path_to_asset_url(batch_output_path) if has_final_pptx else "",
             "slides": slide_payloads,
         },
         "slides": [item["pipeline"] for item in slide_payloads if item.get("pipeline")],
@@ -434,6 +470,23 @@ def _normalize_slide_range(slide_count: int, slide_start: int, slide_end: int | 
     if end > slide_count:
         raise ValueError(f"Batch slide end {end} is out of range. This PPT has {slide_count} slides.")
     return start, end
+
+
+def _is_empty_parsed_slide(parsed: Any) -> bool:
+    diagnostics = getattr(parsed, "diagnostics", None) or {}
+    return bool(diagnostics.get("is_empty"))
+
+
+def _build_skipped_slide(slide_number: int, request_id: str = "", reason: str = "Empty slide skipped.") -> dict[str, Any]:
+    return {
+        "slide_number": slide_number,
+        "request_id": request_id,
+        "status": "skipped",
+        "result_level": "skipped",
+        "reason": reason,
+        "error": "",
+        "pipeline": None,
+    }
 
 
 def _write_batch_pptx(ppt_path: Path, batch_id: str, successful_results: list[dict[str, Any]]) -> Path:
@@ -456,6 +509,7 @@ def _write_batch_pptx(ppt_path: Path, batch_id: str, successful_results: list[di
             title=f"第 {slide_number} 页批量图表增强结果",
             subtitle=intent.get("reason", "批量处理自动生成结果。"),
             intent=intent,
+            shapes=result.get("shapes") or [],
         )
         temp_path.replace(final_path)
 
@@ -532,7 +586,7 @@ def process_ppt_batch(
     custom_flux_api_key: str = "",
 ) -> dict[str, Any]:
     from backend.pipeline import run_pipeline
-    from backend.ppt_parser import get_slide_count
+    from backend.ppt_parser import extract_multiple_slide_contents, get_slide_count
 
     ppt_path = Path(file_path)
     if not ppt_path.exists():
@@ -548,11 +602,36 @@ def process_ppt_batch(
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
     batch_id = next_request_id("batch")
+    target_slides = list(range(start, end + 1))
+    preloaded = extract_multiple_slide_contents(ppt_path, target_slides)
     slide_payloads: list[dict[str, Any]] = []
     successful_results: list[dict[str, Any]] = []
 
-    for slide_number in range(start, end + 1):
+    for slide_number in target_slides:
         request_id = f"{batch_id}-s{slide_number}"
+        parsed = preloaded[slide_number]
+        if _is_empty_parsed_slide(parsed):
+            record_processing_job(
+                request_id=request_id,
+                upload_token=ppt_path.name,
+                source_type="batch",
+                slide_number=slide_number,
+                semantic_mode=resolved_mode,
+                chart_type_override=resolved_chart_type,
+                illustration_style=resolved_style,
+                image_model=resolved_model,
+                status="skipped",
+                final_pptx_path="",
+                chart_theme=resolved_theme,
+                result_payload={
+                    "progress": 100,
+                    "logs": ["Empty slide skipped during batch processing."],
+                    "stage_history": [{"stage": "parse_ppt", "status": "skipped", "details": "Empty slide skipped."}],
+                    "intent": {"layout": {"insertion_mode": "skipped", "original_slide_preserved": True}},
+                },
+            )
+            slide_payloads.append(_build_skipped_slide(slide_number, request_id))
+            continue
         try:
             result = run_pipeline(
                 PipelineInput(
@@ -596,11 +675,17 @@ def process_ppt_batch(
         final_pptx_url = path_to_asset_url(final_path)
 
     failure_count = sum(1 for item in slide_payloads if item["status"] == "failed")
-    success_count = len(slide_payloads) - failure_count
+    skipped_count = sum(1 for item in slide_payloads if item["status"] == "skipped")
+    success_count = sum(1 for item in slide_payloads if item["status"] not in {"failed", "skipped"})
     warning_count = sum(1 for item in slide_payloads if item.get("result_level") == "warning")
     pass_count = sum(1 for item in slide_payloads if item.get("result_level") == "pass")
+    message = "Batch pipeline completed."
+    if failure_count:
+        message = "Batch pipeline completed with failures."
+    elif skipped_count:
+        message = "Batch pipeline completed with skipped slides."
     return {
-        "message": "Batch pipeline completed." if failure_count == 0 else "Batch pipeline completed with failures.",
+        "message": message,
         "file": {
             **build_file_metadata(ppt_path, start),
             "slide_count": slide_count,
@@ -616,6 +701,7 @@ def process_ppt_batch(
             "pass_count": pass_count,
             "warning_count": warning_count,
             "failure_count": failure_count,
+            "skipped_count": skipped_count,
         },
         "batch": {
             "request_id": batch_id,
@@ -625,6 +711,7 @@ def process_ppt_batch(
             "total_slides": len(slide_payloads),
             "success_count": success_count,
             "failure_count": failure_count,
+            "skipped_count": skipped_count,
             "warning_count": warning_count,
             "pass_count": pass_count,
             "final_pptx_path": final_pptx_path,
@@ -869,4 +956,3 @@ def build_health_payload() -> dict[str, Any]:
         ],
         **database_payload,
     }
-

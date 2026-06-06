@@ -2,7 +2,7 @@
 
 项目名称：语义驱动的 PPT 智能图表生成与多模态配图系统
 
-验证日期：2026 年 6 月 4 日
+验证日期：2026 年 6 月 6 日
 
 关联 WBS：`M2.2`、`M2.3`、`M2.4`、`M2.5`、`M2.7`、`M2.8`、`M2.9`、`M2.10`、`M2.11`、`M2.12`
 
@@ -14,10 +14,11 @@
 
 | 验证项 | 命令 | 当前结果 | 状态 | 关联 WBS |
 |---|---|---|---|---|
-| 后端单元测试 | `./.venv/bin/python -m unittest tests.test_pipeline` | `Ran 51 tests in 1.046s`，`OK` | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.6`、`M2.7`、`M2.8`、`M2.9`、`M2.10` |
+| 后端单元测试 | `./.venv/bin/python -m unittest tests.test_pipeline` | `Ran 58 tests in 1.208s`，`OK` | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.6`、`M2.7`、`M2.8`、`M2.9`、`M2.10` |
 | 语义识别评估 | `./.venv/bin/python evaluator.py` | 60/60，准确率 100.00%，平均 CLIP 7.02 | PASS | `M2.4`、`M2.10` |
 | 50 页批量烟测 | `DATABASE_PATH=/private/tmp/m2-test-report-smoke.db ./.venv/bin/python tools/run_50_slide_smoke.py` | 50/50，增强版 PPT 生成成功，平均 CLIP 6.7 | PASS | `M2.2`、`M2.3`、`M2.5`、`M2.10` |
 | 真实 PPT 版式预复核 | `./.venv/bin/python tools/run_m2_layout_prefill.py` | 10/10 份 PASS，处理页新增资产达到预期，附加页未发现越界或图片间重叠 | PASS | `M2.3`、`M2.10` |
+| M2 测试 PPT 问题回归 | `DATABASE_PATH=/private/tmp/m2-dev-verified-issues.db ./.venv/bin/python -c "... process_ppt_batch(...)"` | 第 2-12 页批量处理：10 页成功、0 页失败、1 页空页跳过；第 8、9 页保留原页并追加结果页；人工复核确认修完的 PPT 无问题 | PASS | `M2.2`、`M2.3`、`M2.8`、`M2.10` |
 | 前端生产构建 | `cd frontend && npm run build` | 39 modules transformed，built in 610ms | PASS | `M2.8`、`M2.10` |
 | 图表/配图质量升级 demo | `DATABASE_PATH=/private/tmp/m2-quality-upgrade.db ./.venv/bin/python - <<'PY' ...` | 图表质量 9.42/10，配图质量 7.25/10，负向 prompt 和评分组件可回读 | PASS | `M2.5`、`M2.6`、`M2.7`、`M2.10` |
 | 图表/配图质量样例 Gallery | `DATABASE_PATH=/private/tmp/m2-quality-gallery.db ./.venv/bin/python tools/run_m2_quality_gallery.py` | 10/10 PASS，图表和配图样例 PNG、contact sheet、报告已生成；尺寸、KB、颜色数 sanity check 通过 | PASS | `M2.5`、`M2.6`、`M2.7`、`M2.10` |
@@ -41,7 +42,7 @@
 结果：
 
 ```text
-Ran 51 tests in 1.046s
+Ran 58 tests in 1.208s
 OK
 ```
 
@@ -50,6 +51,7 @@ OK
 - Pipeline 主流程阶段。
 - PPT 解析、空页、图片页、多文本块阅读顺序。
 - PPT 写回与版式避让。
+- 批量空页跳过、原页 shapes 参与写回避让，以及密集文本 / 图片页追加结果页回归。
 - 批量手动布局写回接口与 `manual_override` 布局元数据。
 - 8 类图表生成、异常数据 fallback、质量分数、质量门禁、轴刻度、值标签、负值零基线和饼图 Other 聚合。
 - 文本演示模式保留年份、区间标签和重复双指标数据，相关性样例使用真实双轴 scatter。
@@ -135,6 +137,40 @@ PASS
 - `docs/milestone2-layout-prefill-report.md`
 
 说明：该检查是结构化预复核，覆盖 10 份真实 PPT、每份 3 个代表页。它可以证明增强版 PPT 可打开、处理页资产数量符合预期、附加页图片在边界内且不互相重叠；但不能替代人工打开 PPT 或渲染截图级视觉验收。
+
+### 3.4.1 M2 测试 PPT 问题回归
+
+背景：2026 年 6 月 6 日使用 `tools/create_m2_test_ppt.py` 生成 12 页 Milestone 2 测试 PPT，并对前一次人工验收发现的问题进行回归：
+
+- 第 8 页复杂文本页，生成资产不应覆盖原始文本卡片。
+- 第 9 页图片页，生成资产不应覆盖原始主图片。
+- 第 12 页空白页，不应强行生成图表和配图。
+- 批量逐页预览应能看到原 PPT 页底图，便于判断遮挡并手动微调。
+
+验证命令：
+
+```bash
+./.venv/bin/python tools/create_m2_test_ppt.py
+DATABASE_PATH=/private/tmp/m2-dev-verified-issues.db PYTHONPYCACHEPREFIX=/private/tmp/ppt-smart-chart-pycache ./.venv/bin/python -c "... process_ppt_batch('outputs/milestone2_manual_test_input.pptx', slide_start=2, slide_end=12, image_model='local') ..."
+```
+
+结果摘要：
+
+```text
+message Batch pipeline completed with skipped slides.
+success 10 failed 0 skipped 1
+第 8 页：appendix，original_slide_preserved=True
+第 9 页：appendix，original_slide_preserved=True
+第 12 页：skipped，Empty slide skipped.
+final_slides 15
+```
+
+输出文件：
+
+- `outputs/milestone2_manual_test_input.pptx`
+- `outputs/milestone2_manual_test_input_batch-6ac17a1f0e_batch_enhanced.pptx`
+
+人工复核结论：用户已确认修完的 PPT 没有问题。本轮修复后，空页跳过、图片页避让、复杂文本页保留原页和批量预览原稿底图均通过回归。
 
 ### 3.5 前端生产构建
 
@@ -286,9 +322,8 @@ target backend: failed to solve
 
 - Docker daemon 稳定后的 `PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH" docker compose up -d --build`、`curl http://127.0.0.1:8080` 和 Nginx 代理验证。
 - Qwen、WANX、Flux 在真实 API key 环境下的外部模型路径验证。
-- 增强版 PPT 的人工版式验收截图或记录。
-- 填写 `docs/milestone2-manual-review-scorecard.md` 中的真实 PPT 样例人工评分。
+- 将 2026 年 6 月 6 日 M2 测试 PPT 人工复核结论同步到 `docs/milestone2-manual-review-scorecard.md` 或最终汇报材料。
 
 ## 6. 当前结论
 
-`M2.10` 已具备自动化测试、语义评估、50 页烟测和前端构建证据，能够支撑 Milestone 2 阶段性汇报。由于 Docker 实际启动、外部模型真实调用和人工视觉验收尚未闭环，Milestone 2 整体仍保持 `进行中 / 待验证` 状态。
+`M2.10` 已具备自动化测试、语义评估、50 页烟测、前端构建和 M2 测试 PPT 人工回归证据，能够支撑 Milestone 2 阶段性汇报。2026 年 6 月 6 日已完成空页、图片页、复杂文本页和批量预览原稿底图的回归验证，用户确认修复后的增强版 PPT 无问题。当前剩余风险主要集中在 Docker Compose 后端镜像完整启动，以及 Qwen、WANX、Flux 真实 API key 环境下的外部模型路径验证。

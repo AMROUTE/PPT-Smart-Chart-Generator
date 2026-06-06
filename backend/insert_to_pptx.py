@@ -206,10 +206,10 @@ def _shape_region(shape: dict[str, Any]) -> tuple[int, int, int, int]:
 def _shape_overlap_weight(shape: dict[str, Any]) -> float:
     if shape.get("has_table"):
         return 4.0
+    if shape.get("has_picture") or str(shape.get("shape_type", "")).upper() == "PICTURE":
+        return 6.0
     if shape.get("has_text"):
-        return 3.0
-    if str(shape.get("shape_type", "")).upper() == "PICTURE":
-        return 2.0
+        return 4.5
     return 0.75
 
 

@@ -206,6 +206,63 @@ class ServiceTests(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_process_ppt_batch_skips_empty_slides(self):
+        if Presentation is None:
+            self.skipTest("python-pptx is not installed")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-batch-empty-slide.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.shapes.add_textbox(1000000, 700000, 5000000, 700000).text_frame.text = "Revenue trend"
+        table = slide.shapes.add_table(4, 2, 1000000, 1800000, 4000000, 2000000).table
+        table.cell(0, 0).text = "Quarter"
+        table.cell(0, 1).text = "Revenue"
+        table.cell(1, 0).text = "Q1"
+        table.cell(1, 1).text = "100"
+        table.cell(2, 0).text = "Q2"
+        table.cell(2, 1).text = "140"
+        table.cell(3, 0).text = "Q3"
+        table.cell(3, 1).text = "180"
+        prs.slides.add_slide(prs.slide_layouts[6])
+        prs.save(tmp_path)
+        try:
+            payload = process_ppt_batch(tmp_path, slide_start=1, slide_end=2, image_model="local")
+            self.assertEqual(payload["batch"]["total_slides"], 2)
+            self.assertEqual(payload["batch"]["success_count"], 1)
+            self.assertEqual(payload["batch"]["skipped_count"], 1)
+            self.assertEqual(payload["batch"]["slides"][1]["status"], "skipped")
+            self.assertEqual(payload["batch"]["slides"][1]["reason"], "Empty slide skipped.")
+            self.assertTrue(Path(payload["batch"]["final_pptx_path"]).exists())
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_process_ppt_batch_uses_shapes_for_layout_writeback(self):
+        if Presentation is None or Image is None:
+            self.skipTest("python-pptx and Pillow are required")
+        tmp_path = Path(tempfile.gettempdir()) / "codex-test-batch-dense-layout.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        for row in range(4):
+            for col in range(3):
+                box = slide.shapes.add_textbox(
+                    Inches(0.4 + col * 3.0),
+                    Inches(0.9 + row * 1.25),
+                    Inches(2.45),
+                    Inches(0.85),
+                )
+                box.text_frame.text = f"Metric {row}-{col}: {100 + row * 20 + col * 5}"
+        prs.save(tmp_path)
+        try:
+            payload = process_ppt_batch(tmp_path, slide_start=1, slide_end=1, image_model="local")
+            final_path = Path(payload["batch"]["final_pptx_path"])
+            self.assertTrue(final_path.exists())
+            enhanced = Presentation(str(final_path))
+            self.assertEqual(len(enhanced.slides), 2)
+            layout = payload["batch"]["slides"][0]["pipeline"]["intent"]["layout"]
+            self.assertEqual(layout["insertion_mode"], "appendix")
+            self.assertTrue(layout["original_slide_preserved"])
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     def test_build_slide_preview_returns_preview_asset(self):
         if Presentation is None:
             self.skipTest("python-pptx is not installed")
@@ -1174,4 +1231,3 @@ class AppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
