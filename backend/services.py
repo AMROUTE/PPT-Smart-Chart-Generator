@@ -171,6 +171,68 @@ def _record_job(result: dict[str, Any], upload_token: str, source_type: str, sli
     )
 
 
+def _record_failed_job(
+    request_id: str,
+    upload_token: str,
+    source_type: str,
+    slide_number: int,
+    semantic_mode: str,
+    chart_type_override: str,
+    chart_theme: str,
+    illustration_style: str,
+    image_model: str,
+) -> None:
+    record_processing_job(
+        request_id=request_id,
+        upload_token=upload_token,
+        source_type=source_type,
+        slide_number=slide_number,
+        semantic_mode=semantic_mode,
+        chart_type_override=chart_type_override,
+        illustration_style=illustration_style,
+        image_model=image_model,
+        status="failed",
+        final_pptx_path="",
+        chart_theme=chart_theme,
+    )
+
+
+def _slide_result_level(status: str, result: dict[str, Any] | None = None, error: Exception | str | None = None) -> str:
+    if status != "completed":
+        return "failed"
+    pipeline = result or {}
+    intent = pipeline.get("intent", {}) if isinstance(pipeline, dict) else {}
+    if intent.get("layout", {}).get("layout_warning"):
+        return "warning"
+    if pipeline.get("chart_spec", {}).get("quality_status") in {"review", "fallback"}:
+        return "warning"
+    if pipeline.get("illustration_meta", {}).get("regenerate_hint"):
+        return "warning"
+    return "pass"
+
+
+def _build_failed_slide_payload(slide_number: int, request_id: str, error: Exception | str) -> dict[str, Any]:
+    return {
+        "slide_number": slide_number,
+        "request_id": request_id,
+        "status": "failed",
+        "result_level": "failed",
+        "error": str(error),
+        "pipeline": None,
+    }
+
+
+def _build_completed_slide_payload(slide_number: int, request_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slide_number": slide_number,
+        "request_id": request_id,
+        "status": result.get("status", "completed"),
+        "result_level": _slide_result_level(result.get("status", "completed"), result=result),
+        "error": "",
+        "pipeline": result,
+    }
+
+
 def process_local_ppt(
     file_path: str | Path,
     slide_number: int,
@@ -261,63 +323,102 @@ def process_local_ppt_batch(
     batch_output_path = ensure_output_dir() / f"{ppt_path.stem}_batch_enhanced{ppt_path.suffix}"
 
     current_source = ppt_path
-    slide_results: list[dict[str, Any]] = []
+    batch_id = next_request_id("batch")
+    slide_payloads: list[dict[str, Any]] = []
+    successful_results: list[dict[str, Any]] = []
     for slide_number in target_slides:
-        parsed = preloaded[slide_number]
-        result = run_pipeline(
-            {
-                "request_id": next_request_id("batch"),
-                "ppt_path": str(current_source),
-                "current_slide": slide_number,
-                "semantic_mode": resolved_mode,
-                "chart_type_override": resolved_chart_type,
-                "chart_theme": resolved_theme,
-                "illustration_style": resolved_style,
-                "image_model": resolved_model,
-                "custom_qwen_api_key": custom_qwen_api_key.strip(),
-                "custom_qwen_model": custom_qwen_model.strip(),
-                "custom_wanx_api_key": custom_wanx_api_key.strip(),
-                "custom_flux_api_key": custom_flux_api_key.strip(),
-                "text_content": parsed.text_content,
-                "extracted_tables": [
-                    {
-                        "title": table["title"],
-                        "columns": table["columns"],
-                        "rows": table["rows"],
-                        "cell_matrix": table.get("cell_matrix", []),
-                        "merge_hints": table.get("merge_hints", []),
-                        "raw_matrix": table.get("raw_matrix", []),
-                    }
-                    for table in parsed.tables
-                ],
-                "shapes": parsed.shapes,
-                "output_ppt_path": str(batch_output_path),
-                "logs": [],
-                "status": "pending",
-                "progress": 0,
-                "retry_counts": {},
-                "stage_history": [],
-            }
-        )
-        _record_job(result, ppt_path.name, "ppt-batch", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
-        enrich_pipeline_assets(result)
-        slide_results.append(result)
-        current_source = Path(result["final_pptx_path"])
+        request_id = f"{batch_id}-s{slide_number}"
+        try:
+            parsed = preloaded[slide_number]
+            result = run_pipeline(
+                {
+                    "request_id": request_id,
+                    "ppt_path": str(current_source),
+                    "current_slide": slide_number,
+                    "semantic_mode": resolved_mode,
+                    "chart_type_override": resolved_chart_type,
+                    "chart_theme": resolved_theme,
+                    "illustration_style": resolved_style,
+                    "image_model": resolved_model,
+                    "custom_qwen_api_key": custom_qwen_api_key.strip(),
+                    "custom_qwen_model": custom_qwen_model.strip(),
+                    "custom_wanx_api_key": custom_wanx_api_key.strip(),
+                    "custom_flux_api_key": custom_flux_api_key.strip(),
+                    "text_content": parsed.text_content,
+                    "extracted_tables": [
+                        {
+                            "title": table["title"],
+                            "columns": table["columns"],
+                            "rows": table["rows"],
+                            "cell_matrix": table.get("cell_matrix", []),
+                            "merge_hints": table.get("merge_hints", []),
+                            "raw_matrix": table.get("raw_matrix", []),
+                        }
+                        for table in parsed.tables
+                    ],
+                    "shapes": parsed.shapes,
+                    "output_ppt_path": str(batch_output_path),
+                    "logs": [],
+                    "status": "pending",
+                    "progress": 0,
+                    "retry_counts": {},
+                    "stage_history": [],
+                }
+            )
+            _record_job(result, ppt_path.name, "ppt-batch", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
+            enrich_pipeline_assets(result)
+            successful_results.append(result)
+            slide_payloads.append(_build_completed_slide_payload(slide_number, request_id, result))
+            current_source = Path(result["final_pptx_path"])
+        except Exception as exc:
+            _record_failed_job(
+                request_id=request_id,
+                upload_token=ppt_path.name,
+                source_type="ppt-batch",
+                slide_number=slide_number,
+                semantic_mode=resolved_mode,
+                chart_type_override=resolved_chart_type,
+                chart_theme=resolved_theme,
+                illustration_style=resolved_style,
+                image_model=resolved_model,
+            )
+            slide_payloads.append(_build_failed_slide_payload(slide_number, request_id, exc))
 
+    failure_count = sum(1 for item in slide_payloads if item["status"] == "failed")
+    success_count = len(slide_payloads) - failure_count
+    warning_count = sum(1 for item in slide_payloads if item.get("result_level") == "warning")
+    pass_count = sum(1 for item in slide_payloads if item.get("result_level") == "pass")
     return {
-        "message": "Batch pipeline completed successfully.",
+        "message": "Batch pipeline completed successfully." if failure_count == 0 else "Batch pipeline completed with failures.",
         "file": build_file_metadata(ppt_path, target_slides[0]),
         "slide_numbers": target_slides,
         "slide_count": slide_count,
-        "processed_count": len(slide_results),
+        "processed_count": len(slide_payloads),
         "semantic_mode": resolved_mode,
         "chart_type_override": resolved_chart_type,
         "chart_theme": resolved_theme,
         "illustration_style": resolved_style,
         "image_model": resolved_model,
+        "result_summary": {
+            "pass_count": pass_count,
+            "warning_count": warning_count,
+            "failure_count": failure_count,
+        },
         "final_pptx_path": str(batch_output_path),
         "final_pptx_url": path_to_asset_url(batch_output_path),
-        "slides": slide_results,
+        "batch": {
+            "request_id": batch_id,
+            "status": "completed" if failure_count == 0 else "partial",
+            "total_slides": len(slide_payloads),
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "warning_count": warning_count,
+            "pass_count": pass_count,
+            "final_pptx_path": str(batch_output_path) if success_count > 0 else "",
+            "final_pptx_url": path_to_asset_url(batch_output_path) if success_count > 0 else "",
+            "slides": slide_payloads,
+        },
+        "slides": [item["pipeline"] for item in slide_payloads if item.get("pipeline")],
     }
 
 
@@ -472,34 +573,20 @@ def process_ppt_batch(
             _record_job(result, ppt_path.name, "batch", slide_number, resolved_mode, resolved_chart_type, resolved_theme, resolved_style, resolved_model)
             enrich_pipeline_assets(result)
             successful_results.append(result)
-            slide_payloads.append(
-                {
-                    "slide_number": slide_number,
-                    "status": result.get("status", "completed"),
-                    "pipeline": result,
-                }
-            )
+            slide_payloads.append(_build_completed_slide_payload(slide_number, request_id, result))
         except Exception as exc:
-            record_processing_job(
+            _record_failed_job(
                 request_id=request_id,
                 upload_token=ppt_path.name,
                 source_type="batch",
                 slide_number=slide_number,
                 semantic_mode=resolved_mode,
                 chart_type_override=resolved_chart_type,
+                chart_theme=resolved_theme,
                 illustration_style=resolved_style,
                 image_model=resolved_model,
-                status="failed",
-                final_pptx_path="",
-                chart_theme=resolved_theme,
             )
-            slide_payloads.append(
-                {
-                    "slide_number": slide_number,
-                    "status": "failed",
-                    "error": str(exc),
-                }
-            )
+            slide_payloads.append(_build_failed_slide_payload(slide_number, request_id, exc))
 
     final_pptx_path = ""
     final_pptx_url = ""
@@ -510,6 +597,8 @@ def process_ppt_batch(
 
     failure_count = sum(1 for item in slide_payloads if item["status"] == "failed")
     success_count = len(slide_payloads) - failure_count
+    warning_count = sum(1 for item in slide_payloads if item.get("result_level") == "warning")
+    pass_count = sum(1 for item in slide_payloads if item.get("result_level") == "pass")
     return {
         "message": "Batch pipeline completed." if failure_count == 0 else "Batch pipeline completed with failures.",
         "file": {
@@ -523,6 +612,11 @@ def process_ppt_batch(
         "chart_theme": resolved_theme,
         "illustration_style": resolved_style,
         "image_model": resolved_model,
+        "result_summary": {
+            "pass_count": pass_count,
+            "warning_count": warning_count,
+            "failure_count": failure_count,
+        },
         "batch": {
             "request_id": batch_id,
             "status": "completed" if failure_count == 0 else "partial",
@@ -531,6 +625,8 @@ def process_ppt_batch(
             "total_slides": len(slide_payloads),
             "success_count": success_count,
             "failure_count": failure_count,
+            "warning_count": warning_count,
+            "pass_count": pass_count,
             "final_pptx_path": final_pptx_path,
             "final_pptx_url": final_pptx_url,
             "slides": slide_payloads,

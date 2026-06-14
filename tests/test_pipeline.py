@@ -141,6 +141,31 @@ class ServiceTests(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_process_local_ppt_batch_reports_partial_failures(self):
+        with patch("backend.ppt_parser.extract_multiple_slide_contents") as mock_extract, patch("backend.ppt_parser.get_slide_count", return_value=2), patch("backend.pipeline.run_pipeline") as mock_run:
+            from backend.services import process_local_ppt_batch
+
+            tmp_path = Path(tempfile.gettempdir()) / "codex-test-local-batch-failure.pptx"
+            tmp_path.write_bytes(b"ppt")
+            parsed = SimpleNamespace(text_content="Revenue trend", tables=[{"title": "t", "columns": ["label", "value"], "rows": [["A", 1]], "cell_matrix": [], "merge_hints": [], "raw_matrix": []}], shapes=[])
+            mock_extract.return_value = {1: parsed, 2: parsed}
+            mock_run.side_effect = [
+                {"request_id": "batch-x-s1", "current_slide": 1, "status": "completed", "final_pptx_path": str(tmp_path), "chart_spec": {"theme": "tech"}, "intent": {}, "chart_image": "", "illustration_image": ""},
+                RuntimeError("slide 2 failed"),
+            ]
+            try:
+                payload = process_local_ppt_batch(tmp_path, [1, 2])
+                self.assertEqual(payload["batch"]["status"], "partial")
+                self.assertEqual(payload["batch"]["success_count"], 1)
+                self.assertEqual(payload["batch"]["failure_count"], 1)
+                self.assertEqual(payload["result_summary"]["failure_count"], 1)
+                self.assertEqual(payload["batch"]["slides"][0]["result_level"], "pass")
+                self.assertEqual(payload["batch"]["slides"][1]["status"], "failed")
+                self.assertEqual(payload["batch"]["slides"][1]["result_level"], "failed")
+                self.assertIn("slide 2 failed", payload["batch"]["slides"][1]["error"])
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
     def test_process_ppt_batch_runs_selected_slide_range(self):
         if Presentation is None:
             self.skipTest("python-pptx is not installed")
@@ -171,7 +196,10 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(payload["batch"]["total_slides"], 2)
             self.assertEqual(payload["batch"]["success_count"], 2)
             self.assertEqual(payload["batch"]["failure_count"], 0)
+            self.assertEqual(payload["result_summary"]["failure_count"], 0)
             self.assertEqual([item["slide_number"] for item in payload["batch"]["slides"]], [1, 2])
+            self.assertTrue(all("request_id" in item for item in payload["batch"]["slides"]))
+            self.assertTrue(all(item["result_level"] in {"pass", "warning"} for item in payload["batch"]["slides"]))
             self.assertTrue(Path(payload["batch"]["final_pptx_path"]).exists())
             self.assertTrue(payload["batch"]["final_pptx_url"].startswith("/assets/outputs/"))
             self.assertTrue(payload["batch"]["slides"][0]["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))

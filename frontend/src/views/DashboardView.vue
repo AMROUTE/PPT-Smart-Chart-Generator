@@ -29,6 +29,8 @@ const demoLoading = ref(false);
 const batchLoading = ref(false);
 const batchLayoutLoading = ref(false);
 const batchLayoutDownloadUrl = ref("");
+const batchFilter = ref("all");
+const batchRetryLoading = ref(false);
 const progressValue = ref(0);
 const stageCards = ref([]);
 const semanticMode = ref(settings.defaultSemanticMode);
@@ -92,9 +94,6 @@ const defaultBatchLayout = {
   illustrationScale: 39,
 };
 
-const batchSlides = computed(() => batchResult.value?.batch?.slides ?? []);
-const hasBatchSlides = computed(() => batchSlides.value.length > 0);
-const activeBatchSlide = computed(() => batchSlides.value[activeBatchIndex.value] ?? null);
 const activeBatchPreviewUrl = computed(() => {
   const previewSlideNumber = activeBatchSlide.value?.slide_number;
   if (!previewSlideNumber) {
@@ -292,6 +291,7 @@ async function submitForm() {
     const payload = await requestProcess(formData);
     response.value = payload;
     batchResult.value = null;
+  batchFilter.value = "all";
     batchSlidePreviewCache.value = {};
     batchSlidePreviewError.value = "";
     finalizeProgress(payload.pipeline);
@@ -573,6 +573,7 @@ async function submitBatch() {
     activeBatchIndex.value = 0;
     batchLayouts.value = {};
     batchLayoutDownloadUrl.value = "";
+    batchFilter.value = "all";
     const firstSuccessfulIndex = (payload.batch?.slides || []).findIndex((item) => item.pipeline);
     if (firstSuccessfulIndex >= 0) {
       selectBatchSlide(firstSuccessfulIndex, false);
@@ -586,6 +587,60 @@ async function submitBatch() {
     stopProgress(true);
   } finally {
     batchLoading.value = false;
+  }
+}
+
+async function retryFailedBatchSlides() {
+  errorMessage.value = "";
+  if (!batchResult.value?.batch?.slides?.some((item) => item.status === "failed")) {
+    errorMessage.value = "???????????";
+    return;
+  }
+  batchRetryLoading.value = true;
+  const failedSlides = batchResult.value.batch.slides.filter((item) => item.status === "failed").map((item) => item.slide_number);
+  const formData = new FormData();
+  if (uploadToken.value) {
+    formData.append("upload_token", uploadToken.value);
+  } else if (file.value) {
+    formData.append("file", file.value);
+  }
+  formData.append("slide_numbers", failedSlides.join(","));
+  formData.append("semantic_mode", semanticMode.value);
+  formData.append("chart_type_override", chartTypeOverride.value);
+  formData.append("chart_theme", chartTheme.value);
+  formData.append("illustration_style", illustrationStyle.value);
+  formData.append("image_model", imageModel.value);
+  appendPersonalSettings(formData);
+  try {
+    const payload = await requestBatchProcess(formData);
+    const merged = new Map((batchResult.value?.batch?.slides || []).map((item) => [item.slide_number, item]));
+    for (const item of payload.batch?.slides || []) {
+      merged.set(item.slide_number, item);
+    }
+    const mergedSlides = [...merged.values()].sort((a, b) => a.slide_number - b.slide_number);
+    batchResult.value = {
+      ...batchResult.value,
+      ...payload,
+      batch: {
+        ...(batchResult.value?.batch || {}),
+        ...(payload.batch || {}),
+        slides: mergedSlides,
+        total_slides: mergedSlides.length,
+        success_count: mergedSlides.filter((item) => item.status !== "failed").length,
+        failure_count: mergedSlides.filter((item) => item.status === "failed").length,
+        warning_count: mergedSlides.filter((item) => item.result_level === "warning").length,
+        pass_count: mergedSlides.filter((item) => item.result_level === "pass").length,
+      },
+    };
+    const firstIndex = batchSlides.value.findIndex((item) => item.pipeline);
+    activeBatchIndex.value = firstIndex >= 0 ? firstIndex : 0;
+    if (firstIndex >= 0) {
+      selectBatchSlide(firstIndex, false);
+    }
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    batchRetryLoading.value = false;
   }
 }
 
@@ -829,7 +884,10 @@ watch(
                     <p class="text-sm font-semibold tracking-tight text-gray-900">批量处理</p>
                     <p class="mt-1 text-sm text-gray-500">第 {{ batchStart || 1 }} - {{ batchEnd || slideCount || batchStart || 1 }} 页</p>
                   </div>
-                  <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">{{ batchStatusText }}</span>
+                  <span
+                    class="rounded-full px-3 py-1 text-xs font-medium"
+                    :class="batchHasFailures ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'"
+                  >{{ batchStatusText }}</span>
                 </div>
                 <div class="mt-4 grid grid-cols-2 gap-3">
                   <label class="block space-y-2">
@@ -871,6 +929,9 @@ watch(
                   <span>下载批量增强版 PPT</span>
                   <span class="text-xs text-gray-400">PPTX</span>
                 </a>
+                <p v-if="batchHasFailures" class="mt-3 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                  ?????????????????????????????? PPT ??
+                </p>
               </div>
 
               <details class="group relative z-20 overflow-visible rounded-2xl border border-gray-100 bg-white/80 p-4">
@@ -1037,6 +1098,20 @@ watch(
                 </div>
               </div>
 
+              <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                <span class="rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700">?? {{ batchPassCount }} ?</span>
+                <span class="rounded-full bg-amber-100 px-3 py-1 font-medium text-amber-700">??? {{ batchWarningCount }} ?</span>
+                <span class="rounded-full bg-red-100 px-3 py-1 font-medium text-red-700">?? {{ batchFailureCount }} ?</span>
+                <span class="rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600">??????????</span>
+                <span class="rounded-full bg-sky-100 px-3 py-1 font-medium text-sky-700">????????</span>
+              </div>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'all' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'" @click="batchFilter = 'all'">??</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'pass' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'" @click="batchFilter = 'pass'">???</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'warning' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700'" @click="batchFilter = 'warning'">????</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'failed' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700'" @click="batchFilter = 'failed'">???</button>
+              </div>
+
               <div class="mt-5 flex gap-2 overflow-x-auto pb-1">
                 <button
                   v-for="(item, index) in batchSlides"
@@ -1059,6 +1134,15 @@ watch(
 
               <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
                 <div class="overflow-hidden rounded-[24px] border border-gray-100 bg-white p-4">
+                  <div class="mb-3 flex items-center justify-between gap-3 text-sm">
+                    <span class="font-medium text-gray-500">??????</span>
+                    <span
+                      class="rounded-full px-3 py-1 text-xs font-medium"
+                      :class="activeBatchSlide?.status === 'failed' ? 'bg-red-100 text-red-700' : activeBatchSlide?.result_level === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
+                    >
+                      {{ activeBatchResultLabel }}
+                    </span>
+                  </div>
                   <div class="relative aspect-video overflow-hidden rounded-[20px] border border-gray-100 bg-white">
                     <img
                       v-if="activeBatchPreviewUrl"
@@ -1095,6 +1179,12 @@ watch(
                     </div>
                   </div>
                   <p class="mt-3 text-sm text-gray-500">{{ batchLayoutText }}</p>
+                  <p class="mt-3 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+                    {{ activeBatchExplainText }}
+                  </p>
+                  <p v-if="activeBatchSlide?.status === 'failed'" class="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600">
+                    ???????????? PPT???????????????????????????
+                  </p>
                 </div>
 
                 <div class="rounded-[24px] border border-gray-100 bg-white p-4">
