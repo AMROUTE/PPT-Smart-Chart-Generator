@@ -266,3 +266,5 @@ data/*.sqlite3-wal
 /docs/agents/
 /docs/adr/
 .DS_Store
+*.docx
+/tools
