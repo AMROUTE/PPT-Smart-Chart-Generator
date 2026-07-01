@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.database import authenticate_or_create_user, fetch_processing_job, init_db, list_recent_jobs
+from backend.database import authenticate_user, create_user, fetch_processing_job, init_db, list_recent_jobs
 from backend.services import (
     allowed_file,
     apply_batch_layout_overrides,
@@ -76,10 +76,23 @@ def create_app() -> FastAPI:
     @app.post("/api/auth/login")
     async def login(username: str = Form(...), password: str = Form(...)) -> JSONResponse:
         try:
-            user = authenticate_or_create_user(username, password)
+            user = authenticate_user(username, password)
             return JSONResponse(
                 {
                     "message": "Login successful.",
+                    "user": user,
+                }
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/auth/register")
+    async def register(username: str = Form(...), password: str = Form(...)) -> JSONResponse:
+        try:
+            user = create_user(username, password)
+            return JSONResponse(
+                {
+                    "message": "Registration successful.",
                     "user": user,
                 }
             )

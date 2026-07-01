@@ -157,14 +157,43 @@ def database_health() -> dict[str, Any]:
     }
 
 
-def authenticate_or_create_user(username: str, password: str) -> dict[str, Any]:
+def _normalize_credentials(username: str, password: str) -> tuple[str, str]:
     normalized_username = username.strip()
     if not normalized_username:
         raise ValueError("用户名不能为空。")
     if not password.strip():
         raise ValueError("密码不能为空。")
+    return normalized_username, password
 
-    password_hash = _hash_password(password)
+
+def create_user(username: str, password: str) -> dict[str, Any]:
+    normalized_username, raw_password = _normalize_credentials(username, password)
+    password_hash = _hash_password(raw_password)
+    now = _utc_now()
+    with get_connection() as connection:
+        _ensure_base_tables(connection)
+        existing = connection.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (normalized_username,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError("用户名已存在，请直接登录。")
+
+        display_name = normalized_username
+        connection.execute(
+            """
+            INSERT INTO users (username, password_hash, display_name, created_at, last_login_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (normalized_username, password_hash, display_name, now, now),
+        )
+        user_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        return {"id": user_id, "username": normalized_username, "display_name": display_name, "created": True}
+
+
+def authenticate_user(username: str, password: str) -> dict[str, Any]:
+    normalized_username, raw_password = _normalize_credentials(username, password)
+    password_hash = _hash_password(raw_password)
     now = _utc_now()
     with get_connection() as connection:
         _ensure_base_tables(connection)
@@ -173,16 +202,7 @@ def authenticate_or_create_user(username: str, password: str) -> dict[str, Any]:
             (normalized_username,),
         ).fetchone()
         if existing is None:
-            display_name = normalized_username
-            connection.execute(
-                """
-                INSERT INTO users (username, password_hash, display_name, created_at, last_login_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (normalized_username, password_hash, display_name, now, now),
-            )
-            user_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-            return {"id": user_id, "username": normalized_username, "display_name": display_name, "created": True}
+            raise ValueError("用户名或密码错误。")
 
         if existing["password_hash"] != password_hash:
             raise ValueError("用户名或密码错误。")

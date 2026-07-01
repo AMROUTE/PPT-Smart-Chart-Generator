@@ -94,6 +94,55 @@ const defaultBatchLayout = {
   illustrationScale: 39,
 };
 
+const allBatchSlides = computed(() => batchResult.value?.batch?.slides ?? []);
+const batchPassCount = computed(() => allBatchSlides.value.filter((item) => item.result_level === "pass").length);
+const batchWarningCount = computed(() => allBatchSlides.value.filter((item) => item.result_level === "warning").length);
+const batchFailureCount = computed(() => allBatchSlides.value.filter((item) => item.status === "failed").length);
+const batchSkippedCount = computed(() => allBatchSlides.value.filter((item) => item.status === "skipped").length);
+const batchHasFailures = computed(() => batchFailureCount.value > 0);
+const batchSlides = computed(() => {
+  if (batchFilter.value === "pass") {
+    return allBatchSlides.value.filter((item) => item.result_level === "pass");
+  }
+  if (batchFilter.value === "warning") {
+    return allBatchSlides.value.filter((item) => item.result_level === "warning");
+  }
+  if (batchFilter.value === "failed") {
+    return allBatchSlides.value.filter((item) => item.status === "failed");
+  }
+  return allBatchSlides.value;
+});
+const hasBatchSlides = computed(() => batchSlides.value.length > 0);
+const activeBatchSlide = computed(() => batchSlides.value[activeBatchIndex.value] ?? null);
+const activeBatchResultLabel = computed(() => {
+  const slide = activeBatchSlide.value;
+  if (!slide) {
+    return "等待结果";
+  }
+  if (slide.status === "failed") {
+    return "失败";
+  }
+  if (slide.status === "skipped") {
+    return "已跳过";
+  }
+  if (slide.result_level === "warning") {
+    return "需复核";
+  }
+  return "通过";
+});
+const activeBatchExplainText = computed(() => {
+  const slide = activeBatchSlide.value;
+  if (!slide) {
+    return "请选择一页批量结果。";
+  }
+  if (slide.status === "failed") {
+    return slide.error || "该页处理失败，可调整参数后重试。";
+  }
+  if (slide.status === "skipped") {
+    return slide.reason || "该页为空白页，已保留原稿并跳过生成。";
+  }
+  return slide.pipeline?.intent?.reason || "该页已生成图表和配图，可在此预览并微调写回位置。";
+});
 const activeBatchPreviewUrl = computed(() => {
   const previewSlideNumber = activeBatchSlide.value?.slide_number;
   if (!previewSlideNumber) {
@@ -257,6 +306,22 @@ const summaryMetrics = computed(() => [
   { label: "配图质量", value: illustrationQualityStatus.value },
   { label: "进度", value: `${progressValue.value}%` },
 ]);
+const missingApiKeys = computed(() => {
+  const missing = [];
+  if (semanticMode.value === "qwen" && !settings.customQwenApiKey?.trim()) {
+    missing.push("Qwen API Key");
+  }
+  if (imageModel.value === "wanx" && !settings.customWanxApiKey?.trim()) {
+    missing.push("WANX API Key");
+  }
+  if (imageModel.value === "flux" && !settings.customFluxApiKey?.trim()) {
+    missing.push("FLUX API Key");
+  }
+  return missing;
+});
+const apiKeyWarning = computed(() =>
+  missingApiKeys.value.length ? `请先在个人设置中填写 ${missingApiKeys.value.join("、")}。` : "",
+);
 
 function appendPersonalSettings(formData) {
   formData.append("custom_qwen_api_key", settings.customQwenApiKey || "");
@@ -265,17 +330,28 @@ function appendPersonalSettings(formData) {
   formData.append("custom_flux_api_key", settings.customFluxApiKey || "");
 }
 
+function ensureApiKeysReady() {
+  if (!apiKeyWarning.value) {
+    return true;
+  }
+  errorMessage.value = apiKeyWarning.value;
+  stopProgress(true);
+  return false;
+}
+
 async function submitForm() {
   errorMessage.value = "";
   response.value = null;
-  startProgress();
 
   if (!file.value) {
     errorMessage.value = "请先上传 PPTX 文件。";
-    stopProgress(true);
+    return;
+  }
+  if (!ensureApiKeysReady()) {
     return;
   }
 
+  startProgress();
   loading.value = true;
   const formData = new FormData();
   formData.append("file", file.value);
@@ -307,6 +383,10 @@ async function submitForm() {
 async function runDemo() {
   errorMessage.value = "";
   response.value = null;
+  if (!ensureApiKeysReady()) {
+    return;
+  }
+
   startProgress();
   demoLoading.value = true;
 
@@ -535,11 +615,12 @@ async function submitBatch() {
   batchResult.value = null;
   batchSlidePreviewCache.value = {};
   batchSlidePreviewError.value = "";
-  startProgress();
 
   if (activeMode.value !== "ppt" || (!file.value && !uploadToken.value)) {
     errorMessage.value = "请先上传 PPTX 文件。";
-    stopProgress(true);
+    return;
+  }
+  if (!ensureApiKeysReady()) {
     return;
   }
 
@@ -547,10 +628,10 @@ async function submitBatch() {
   const end = Number(batchEnd.value || slideCount.value || start);
   if (start < 1 || end < start) {
     errorMessage.value = "请填写有效的批量页码范围。";
-    stopProgress(true);
     return;
   }
 
+  startProgress();
   batchLoading.value = true;
   const formData = new FormData();
   if (uploadToken.value) {
@@ -593,7 +674,10 @@ async function submitBatch() {
 async function retryFailedBatchSlides() {
   errorMessage.value = "";
   if (!batchResult.value?.batch?.slides?.some((item) => item.status === "failed")) {
-    errorMessage.value = "???????????";
+    errorMessage.value = "当前没有失败页可重试。";
+    return;
+  }
+  if (!ensureApiKeysReady()) {
     return;
   }
   batchRetryLoading.value = true;
@@ -626,8 +710,9 @@ async function retryFailedBatchSlides() {
         ...(payload.batch || {}),
         slides: mergedSlides,
         total_slides: mergedSlides.length,
-        success_count: mergedSlides.filter((item) => item.status !== "failed").length,
+        success_count: mergedSlides.filter((item) => item.status !== "failed" && item.status !== "skipped").length,
         failure_count: mergedSlides.filter((item) => item.status === "failed").length,
+        skipped_count: mergedSlides.filter((item) => item.status === "skipped").length,
         warning_count: mergedSlides.filter((item) => item.result_level === "warning").length,
         pass_count: mergedSlides.filter((item) => item.result_level === "pass").length,
       },
@@ -748,6 +833,13 @@ watch(slideNumber, () => {
   }
 });
 
+watch(batchFilter, () => {
+  activeBatchIndex.value = 0;
+  if (batchSlides.value[0]) {
+    selectBatchSlide(0, false);
+  }
+});
+
 watch(
   () => settings.defaultSemanticMode,
   (value) => {
@@ -853,11 +945,15 @@ watch(
                 />
               </label>
 
+              <p v-if="apiKeyWarning" class="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                {{ apiKeyWarning }}
+              </p>
+
               <div class="grid gap-3">
                 <button
                   type="button"
                   class="rounded-full bg-gray-900 px-5 py-3 text-sm font-medium text-white transition-all duration-200 ease-in-out hover:bg-gray-800 active:scale-[0.98]"
-                  :disabled="loading || demoLoading || batchLoading"
+                  :disabled="loading || demoLoading || batchLoading || Boolean(apiKeyWarning)"
                   @click="activeMode === 'ppt' ? submitForm() : runDemo()"
                 >
                   {{
@@ -871,7 +967,7 @@ watch(
                 <button
                   type="button"
                   class="rounded-full border border-gray-200 bg-white px-5 py-3 text-sm font-medium text-gray-700 transition-transform duration-150 ease-in-out hover:bg-gray-50 active:scale-[0.98]"
-                  :disabled="loading || demoLoading || batchLoading"
+                  :disabled="loading || demoLoading || batchLoading || Boolean(apiKeyWarning)"
                   @click="rerunCurrentMode"
                 >
                   重新生成当前结果
@@ -914,7 +1010,7 @@ watch(
                 <button
                   type="button"
                   class="mt-4 w-full rounded-full border border-gray-200 bg-gray-950 px-5 py-3 text-sm font-medium text-white transition-transform duration-150 ease-in-out hover:bg-gray-800 active:scale-[0.98]"
-                  :disabled="loading || demoLoading || batchLoading || (!file && !uploadToken)"
+                  :disabled="loading || demoLoading || batchLoading || Boolean(apiKeyWarning) || (!file && !uploadToken)"
                   @click="submitBatch"
                 >
                   {{ batchLoading ? "批量处理中..." : "批量生成合并 PPT" }}
@@ -930,7 +1026,7 @@ watch(
                   <span class="text-xs text-gray-400">PPTX</span>
                 </a>
                 <p v-if="batchHasFailures" class="mt-3 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                  ?????????????????????????????? PPT ??
+                  部分页处理失败，可调整参数后重新生成失败页；已成功的页面仍可下载合并 PPT。
                 </p>
               </div>
 
@@ -1099,17 +1195,17 @@ watch(
               </div>
 
               <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
-                <span class="rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700">?? {{ batchPassCount }} ?</span>
-                <span class="rounded-full bg-amber-100 px-3 py-1 font-medium text-amber-700">??? {{ batchWarningCount }} ?</span>
-                <span class="rounded-full bg-red-100 px-3 py-1 font-medium text-red-700">?? {{ batchFailureCount }} ?</span>
-                <span class="rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600">??????????</span>
-                <span class="rounded-full bg-sky-100 px-3 py-1 font-medium text-sky-700">????????</span>
+                <span class="rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700">通过 {{ batchPassCount }} 页</span>
+                <span class="rounded-full bg-amber-100 px-3 py-1 font-medium text-amber-700">复核 {{ batchWarningCount }} 页</span>
+                <span class="rounded-full bg-red-100 px-3 py-1 font-medium text-red-700">失败 {{ batchFailureCount }} 页</span>
+                <span class="rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600">跳过 {{ batchSkippedCount }} 页</span>
+                <span class="rounded-full bg-sky-100 px-3 py-1 font-medium text-sky-700">原稿预览可叠加</span>
               </div>
               <div class="mt-3 flex flex-wrap gap-2">
-                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'all' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'" @click="batchFilter = 'all'">??</button>
-                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'pass' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'" @click="batchFilter = 'pass'">???</button>
-                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'warning' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700'" @click="batchFilter = 'warning'">????</button>
-                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'failed' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700'" @click="batchFilter = 'failed'">???</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'all' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'" @click="batchFilter = 'all'">全部</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'pass' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'" @click="batchFilter = 'pass'">通过</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'warning' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700'" @click="batchFilter = 'warning'">需复核</button>
+                <button type="button" class="rounded-full px-3 py-1 text-xs font-medium" :class="batchFilter === 'failed' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700'" @click="batchFilter = 'failed'">失败</button>
               </div>
 
               <div class="mt-5 flex gap-2 overflow-x-auto pb-1">
@@ -1135,7 +1231,7 @@ watch(
               <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
                 <div class="overflow-hidden rounded-[24px] border border-gray-100 bg-white p-4">
                   <div class="mb-3 flex items-center justify-between gap-3 text-sm">
-                    <span class="font-medium text-gray-500">??????</span>
+                    <span class="font-medium text-gray-500">原稿叠加预览</span>
                     <span
                       class="rounded-full px-3 py-1 text-xs font-medium"
                       :class="activeBatchSlide?.status === 'failed' ? 'bg-red-100 text-red-700' : activeBatchSlide?.result_level === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
@@ -1183,7 +1279,7 @@ watch(
                     {{ activeBatchExplainText }}
                   </p>
                   <p v-if="activeBatchSlide?.status === 'failed'" class="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600">
-                    ???????????? PPT???????????????????????????
+                    该页处理失败，原 PPT 内容已保留；可切换参数后重试失败页。
                   </p>
                 </div>
 

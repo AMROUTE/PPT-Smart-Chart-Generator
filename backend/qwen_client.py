@@ -105,9 +105,12 @@ def analyze_semantics_with_qwen(
     model: str = "",
 ) -> dict[str, Any]:
     settings = get_settings()
-    resolved_api_key = api_key or settings.qwen_api_key
+    user_api_key = api_key.strip()
+    resolved_api_key = user_api_key or settings.qwen_api_key
     resolved_model = model or settings.qwen_model
-    if not settings.enable_qwen_api or not resolved_api_key:
+    if not resolved_api_key:
+        raise RuntimeError("Qwen API key is missing.")
+    if not user_api_key and not settings.enable_qwen_api:
         raise RuntimeError("Qwen API is disabled or API key is missing.")
 
     payload = {

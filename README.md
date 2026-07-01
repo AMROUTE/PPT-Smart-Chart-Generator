@@ -120,15 +120,16 @@ python -m pip install -r requirements.txt
 ### 2. 配置可选环境变量
 
 不配置外部模型 Key 也可以本地启动，系统会使用本地规则语义分析和本地配图预览。
+如果用户在工作台选择 `qwen`、`wanx` 或 `flux`，需要先在“个人设置”填写自己的 API Key；对应 Key 为空时，前端和后端都会提示并阻止请求。
 
-如果需要启用千问语义分析或线上配图，在项目根目录创建 `.env`：
+如果需要配置默认模型名或服务端本地调试 Key，可在项目根目录创建 `.env`：
 
 ```env
 ENABLE_QWEN_API=1
 QWEN_API_KEY=your-qwen-api-key
 QWEN_MODEL=qwen-plus
 
-# 可选：通义万相配图，未设置时会尝试复用 QWEN_API_KEY
+# 可选：通义万相配图
 WANX_API_KEY=your-wanx-api-key
 WANX_MODEL=wan2.6-t2i
 
@@ -260,7 +261,7 @@ python evaluator.py
 
 ### 1. 准备环境变量
 
-确保根目录 `.env` 至少包含：
+如需配置默认模型名或服务端本地调试 Key，可在根目录 `.env` 写入：
 
 ```env
 QWEN_API_KEY=your-qwen-api-key
@@ -268,7 +269,7 @@ ENABLE_QWEN_API=1
 QWEN_MODEL=qwen-plus
 ```
 
-如果你暂时不想启用千问，可以设置：
+如果你暂时不想启用千问，可以设置；前端用户仍可在个人设置中填写自己的 Qwen Key 后发起 Qwen 请求：
 
 ```env
 ENABLE_QWEN_API=0
