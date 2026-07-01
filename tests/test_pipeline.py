@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -23,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.chart_generator import generate_chart
-from backend.database import authenticate_or_create_user, fetch_processing_job, init_db
+from backend.database import authenticate_user, create_user, fetch_processing_job, init_db
 from backend.image_clients import _resolve_flux_result_url, generate_flux_image, generate_wanx_image
 from backend.insert_to_pptx import _choose_asset_regions, _overlap_area, insert_chart_to_pptx, insert_generated_assets
 from backend.pipeline import PIPELINE_NODES, _infer_illustration_context, _recommend_chart_intent, _select_illustration_composition_variant, export_pipeline_mermaid, run_pipeline
@@ -102,7 +103,7 @@ class ServiceTests(unittest.TestCase):
         table.cell(3, 1).text = "180"
         prs.save(tmp_path)
         try:
-            payload = process_local_ppt(tmp_path, 1, chart_type_override="line", chart_theme="business", illustration_style="tech", image_model="flux")
+            payload = process_local_ppt(tmp_path, 1, chart_type_override="line", chart_theme="business", illustration_style="tech", image_model="local")
             self.assertEqual(payload["file"]["slide_number"], 1)
             self.assertIn("pipeline", payload)
             self.assertIn("chart_image_url", payload["pipeline"])
@@ -337,7 +338,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("scatter_trendline", spec["render_notes"])
 
     def test_process_demo_text_returns_preview_assets(self):
-        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", chart_theme="minimal", illustration_style="business", image_model="wanx")
+        payload = process_demo_text("Q1: 12\nQ2: 18\nQ3: 26", chart_type_override="pie", chart_theme="minimal", illustration_style="business", image_model="local")
         self.assertEqual(payload["pipeline"]["status"], "completed")
         self.assertTrue(payload["pipeline"]["chart_image_url"].startswith("/assets/outputs/"))
         self.assertEqual(payload["pipeline"]["intent"]["chart_type"], "pie")
@@ -351,8 +352,22 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(payload["pipeline"]["chart_spec"]["theme"], "minimal")
         self.assertIn(payload["pipeline"]["illustration_meta"]["generation_source"], {"local", "wanx", "flux"})
 
+    def test_process_demo_text_requires_selected_provider_api_keys(self):
+        with self.assertRaisesRegex(ValueError, "Qwen API Key"):
+            process_demo_text("Revenue: 120", semantic_mode="qwen", image_model="local")
+        with self.assertRaisesRegex(ValueError, "WANX API Key"):
+            process_demo_text("Revenue: 120", image_model="wanx")
+        with self.assertRaisesRegex(ValueError, "FLUX API Key"):
+            process_demo_text("Revenue: 120", image_model="flux")
+
     def test_process_demo_text_falls_back_when_remote_image_model_is_unavailable(self):
-        payload = process_demo_text("Revenue: 120\nCost: 80\nProfit: 40", illustration_style="tech", image_model="wanx")
+        with patch("backend.image_clients.generate_wanx_image", side_effect=RuntimeError("WANX unavailable")):
+            payload = process_demo_text(
+                "Revenue: 120\nCost: 80\nProfit: 40",
+                illustration_style="tech",
+                image_model="wanx",
+                custom_wanx_api_key="test-wanx-key",
+            )
         self.assertEqual(payload["pipeline"]["status"], "completed")
         meta = payload["pipeline"]["illustration_meta"]
         self.assertEqual(meta["generation_source"], "local")
@@ -1189,6 +1204,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("/api/slide-preview", route_paths)
         self.assertIn("/api/parse-slides", route_paths)
         self.assertIn("/api/auth/login", route_paths)
+        self.assertIn("/api/auth/register", route_paths)
         self.assertIn("/api/jobs", route_paths)
         self.assertIn("/api/jobs/{request_id}", route_paths)
 
@@ -1209,11 +1225,35 @@ class AppTests(unittest.TestCase):
         self.assertIn("manual-layout-writeback", payload["features"])
         self.assertIsInstance(payload["database_enabled"], bool)
 
-    def test_authenticate_or_create_user_persists_user(self):
-        user = authenticate_or_create_user("codex-demo", "demo123")
-        self.assertEqual(user["username"], "codex-demo")
-        same_user = authenticate_or_create_user("codex-demo", "demo123")
+    def test_register_and_login_user_are_separate(self):
+        username = f"codex-demo-{uuid.uuid4().hex[:8]}"
+        with self.assertRaisesRegex(ValueError, "用户名或密码错误"):
+            authenticate_user(username, "demo123")
+        user = create_user(username, "demo123")
+        self.assertEqual(user["username"], username)
+        same_user = authenticate_user(username, "demo123")
         self.assertEqual(user["id"], same_user["id"])
+        with self.assertRaisesRegex(ValueError, "用户名已存在"):
+            create_user(username, "demo123")
+        with self.assertRaisesRegex(ValueError, "用户名或密码错误"):
+            authenticate_user(username, "wrong-password")
+
+    def test_auth_endpoints_register_then_login(self):
+        client = TestClient(create_app())
+        username = f"codex-api-{uuid.uuid4().hex[:8]}"
+        login_before_register = client.post("/api/auth/login", data={"username": username, "password": "demo123"})
+        self.assertEqual(login_before_register.status_code, 400)
+
+        register_response = client.post("/api/auth/register", data={"username": username, "password": "demo123"})
+        self.assertEqual(register_response.status_code, 200)
+        self.assertEqual(register_response.json()["user"]["username"], username)
+
+        duplicate_response = client.post("/api/auth/register", data={"username": username, "password": "demo123"})
+        self.assertEqual(duplicate_response.status_code, 400)
+
+        login_response = client.post("/api/auth/login", data={"username": username, "password": "demo123"})
+        self.assertEqual(login_response.status_code, 200)
+        self.assertEqual(login_response.json()["user"]["username"], username)
 
     def test_job_detail_endpoint_returns_pipeline_metadata(self):
         payload = process_demo_text("Alpha\nBeta", illustration_style="auto", image_model="local")

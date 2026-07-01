@@ -106,7 +106,29 @@ curl http://127.0.0.1:8000/api/pipeline
 }
 ```
 
-## 4. 登录
+## 4. 注册与登录
+
+### 注册
+
+```http
+POST /api/auth/register
+```
+
+请求类型：`multipart/form-data`
+
+字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `username` | 是 | 用户名 |
+| `password` | 是 | 密码 |
+
+说明：
+
+- 如果用户名已存在，返回 `400`。
+- 注册成功后返回用户信息，前端可直接进入工作台。
+
+### 登录
 
 ```http
 POST /api/auth/login
@@ -123,8 +145,8 @@ POST /api/auth/login
 
 说明：
 
-- 如果用户不存在，会自动创建用户。
-- 如果用户存在但密码不匹配，返回 `400`。
+- 如果用户不存在或密码不匹配，返回 `400`。
+- 登录不会自动创建用户；新用户需要先调用注册接口。
 
 示例：
 
@@ -160,10 +182,15 @@ POST /api/process
 | `chart_theme` | 否 | `tech` | 图表主题 |
 | `illustration_style` | 否 | `auto` | 配图风格 |
 | `image_model` | 否 | `local` | 配图模型 |
-| `custom_qwen_api_key` | 否 | 空 | 当前请求的 Qwen key |
+| `custom_qwen_api_key` | 条件必填 | 空 | `semantic_mode=qwen` 时必填 |
 | `custom_qwen_model` | 否 | 空 | 当前请求的 Qwen 模型 |
-| `custom_wanx_api_key` | 否 | 空 | 当前请求的 WANX key |
-| `custom_flux_api_key` | 否 | 空 | 当前请求的 Flux key |
+| `custom_wanx_api_key` | 条件必填 | 空 | `image_model=wanx` 时必填 |
+| `custom_flux_api_key` | 条件必填 | 空 | `image_model=flux` 时必填 |
+
+说明：
+
+- 外部模型 key 需要由当前用户在前端个人设置中填写并随请求传入。
+- 如果选择 Qwen、WANX 或 FLUX 但对应 key 为空，接口返回 `400` 并提示缺少的 key。
 
 示例：
 

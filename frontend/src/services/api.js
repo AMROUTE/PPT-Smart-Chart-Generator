@@ -15,6 +15,10 @@ export function requestLogin(formData) {
   return request("/api/auth/login", { method: "POST", body: formData });
 }
 
+export function requestRegister(formData) {
+  return request("/api/auth/register", { method: "POST", body: formData });
+}
+
 export function requestProcess(formData) {
   return request("/api/process", { method: "POST", body: formData });
 }

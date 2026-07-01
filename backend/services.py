@@ -138,6 +138,25 @@ def normalize_image_model(image_model: str | None) -> str:
     return normalized if normalized in allowed else "local"
 
 
+def validate_required_api_keys(
+    semantic_mode: str | None,
+    image_model: str | None,
+    custom_qwen_api_key: str = "",
+    custom_wanx_api_key: str = "",
+    custom_flux_api_key: str = "",
+) -> None:
+    missing: list[str] = []
+    if normalize_semantic_mode(semantic_mode) == "qwen" and not custom_qwen_api_key.strip():
+        missing.append("Qwen API Key")
+    resolved_image_model = normalize_image_model(image_model)
+    if resolved_image_model == "wanx" and not custom_wanx_api_key.strip():
+        missing.append("WANX API Key")
+    if resolved_image_model == "flux" and not custom_flux_api_key.strip():
+        missing.append("FLUX API Key")
+    if missing:
+        raise ValueError(f"请先在个人设置中填写 {'、'.join(missing)}。")
+
+
 def _normalize_slide_numbers(slide_numbers: list[int] | None, slide_count: int) -> list[int]:
     requested = slide_numbers or list(range(1, slide_count + 1))
     deduped: list[int] = []
@@ -260,6 +279,13 @@ def process_local_ppt(
     resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
+    validate_required_api_keys(
+        resolved_mode,
+        resolved_model,
+        custom_qwen_api_key=custom_qwen_api_key,
+        custom_wanx_api_key=custom_wanx_api_key,
+        custom_flux_api_key=custom_flux_api_key,
+    )
     result = run_pipeline(
         PipelineInput(
             ppt_path=str(ppt_path),
@@ -319,6 +345,13 @@ def process_local_ppt_batch(
     resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
+    validate_required_api_keys(
+        resolved_mode,
+        resolved_model,
+        custom_qwen_api_key=custom_qwen_api_key,
+        custom_wanx_api_key=custom_wanx_api_key,
+        custom_flux_api_key=custom_flux_api_key,
+    )
     preloaded = extract_multiple_slide_contents(ppt_path, target_slides)
     batch_output_path = ensure_output_dir() / f"{ppt_path.stem}_batch_enhanced{ppt_path.suffix}"
 
@@ -601,6 +634,13 @@ def process_ppt_batch(
     resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
+    validate_required_api_keys(
+        resolved_mode,
+        resolved_model,
+        custom_qwen_api_key=custom_qwen_api_key,
+        custom_wanx_api_key=custom_wanx_api_key,
+        custom_flux_api_key=custom_flux_api_key,
+    )
     batch_id = next_request_id("batch")
     target_slides = list(range(start, end + 1))
     preloaded = extract_multiple_slide_contents(ppt_path, target_slides)
@@ -803,6 +843,13 @@ def process_demo_text(
     resolved_theme = normalize_chart_theme(chart_theme)
     resolved_style = normalize_illustration_style(illustration_style)
     resolved_model = normalize_image_model(image_model)
+    validate_required_api_keys(
+        resolved_mode,
+        resolved_model,
+        custom_qwen_api_key=custom_qwen_api_key,
+        custom_wanx_api_key=custom_wanx_api_key,
+        custom_flux_api_key=custom_flux_api_key,
+    )
     request_id = next_request_id("demo")
     columns = list(records[0].keys()) if records else ["category", "value"]
     result = run_pipeline(

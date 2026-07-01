@@ -1,9 +1,25 @@
 <script setup>
+import { computed } from "vue";
+
 import SelectMenu from "../components/SelectMenu.vue";
 import { illustrationStyleOptions, imageModelOptions, semanticModeOptions } from "../config/options";
 import { useUserSettings } from "../composables/useUserSettings";
 
 const { settings, resetSettings } = useUserSettings();
+
+const missingDefaultKeys = computed(() => {
+  const missing = [];
+  if (settings.defaultSemanticMode === "qwen" && !settings.customQwenApiKey?.trim()) {
+    missing.push("Qwen API Key");
+  }
+  if (settings.defaultImageModel === "wanx" && !settings.customWanxApiKey?.trim()) {
+    missing.push("WANX API Key");
+  }
+  if (settings.defaultImageModel === "flux" && !settings.customFluxApiKey?.trim()) {
+    missing.push("FLUX API Key");
+  }
+  return missing;
+});
 </script>
 
 <template>
@@ -16,6 +32,9 @@ const { settings, resetSettings } = useUserSettings();
           <p class="mt-4 max-w-3xl text-base leading-7 text-gray-500">
             在这里配置你自己的 API key、默认语义模式、默认配图模型和调用模型。保存后，工作台会自动带上这些配置。
           </p>
+          <p v-if="missingDefaultKeys.length" class="mt-5 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            当前默认配置还缺少 {{ missingDefaultKeys.join("、") }}。
+          </p>
         </section>
 
         <section class="grid grid-cols-12 gap-6 xl:gap-8">
@@ -27,7 +46,7 @@ const { settings, resetSettings } = useUserSettings();
                 <input
                   v-model="settings.customQwenApiKey"
                   type="password"
-                  placeholder="留空则使用系统默认 key"
+                  placeholder="选择 Qwen 语义分析时必填"
                   class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
                 />
               </label>
@@ -47,7 +66,7 @@ const { settings, resetSettings } = useUserSettings();
                 <input
                   v-model="settings.customWanxApiKey"
                   type="password"
-                  placeholder="用于通义万相配图"
+                  placeholder="选择 WANX 配图时必填"
                   class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
                 />
               </label>
@@ -57,7 +76,7 @@ const { settings, resetSettings } = useUserSettings();
                 <input
                   v-model="settings.customFluxApiKey"
                   type="password"
-                  placeholder="用于 Flux 配图"
+                  placeholder="选择 FLUX 配图时必填"
                   class="w-full rounded-2xl border border-transparent bg-gray-100 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-200 ease-in-out placeholder:text-gray-400 focus:border-gray-300 focus:bg-white focus:ring-1 focus:ring-gray-300 focus:shadow-sm"
                 />
               </label>
